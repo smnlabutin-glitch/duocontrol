@@ -1,0 +1,12 @@
+---
+description: Standards for mobile app development with Flutter and React Native
+globs: **/*.{dart,tsx,jsx,ts}
+alwaysApply: false
+---
+
+# Mobile Application Development Standards
+
+- Design for thumb ergonomics: high-frequency actions within the bottom 40% of the viewport.
+- Always handle system safe area insets (`SafeArea` in Flutter, `useSafeAreaInsets` in React Native).
+- Optimize lists with virtualized or fast list renderers (`FlashList` or `ListView.builder`).
+- Support hardware-accelerated 60/120fps gesture animations and haptic feedback.

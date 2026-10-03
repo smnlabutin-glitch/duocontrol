@@ -1,0 +1,13 @@
+---
+description: Standards for web application development using React, Next.js, Vite, and TypeScript
+globs: **/*.{ts,tsx,js,jsx}
+alwaysApply: true
+---
+
+# Web Application Development Standards
+
+- Enforce TypeScript strict mode without implicit `any`.
+- Structure components using feature-driven architecture (`src/features/[feature]/...`).
+- Separate server state (TanStack Query / Server Components) from global client state (Zustand).
+- Validate all user inputs and external API responses with Zod schemas.
+- Ensure all interactive elements meet WCAG 2.1 AA accessibility standards.

@@ -1,0 +1,13 @@
+---
+description: Ponytail and Caveman rule for minimal token usage, concise code, and terse responses
+globs: **/*
+alwaysApply: false
+---
+
+# Ponytail & Token-Saver Rules
+
+- Climb The Ladder before writing code: YAGNI -> Reuse existing code -> Stdlib -> Native browser/platform -> Installed dependencies -> One-line -> Minimum working code.
+- Prevent over-engineering: no speculative interfaces, wrappers, or boilerplate.
+- Output answers first: omit conversational filler ("Sure!", "Here is the code...").
+- Keep explanations under 3 lines unless the user explicitly requested documentation.
+- Never sacrifice security, accessibility, or error handling.

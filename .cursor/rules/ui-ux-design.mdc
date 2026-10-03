@@ -1,0 +1,14 @@
+---
+description: Rules for modern, aesthetic UI/UX design, typography, color palettes, and micro-animations
+globs: **/*.{css,scss,tsx,jsx,vue,svelte,html}
+alwaysApply: false
+---
+
+# UI/UX Design System & Aesthetics Rules
+
+- Never produce generic, plain, or unstyled UI.
+- Use curated HSL color schemes with deep dark surfaces (`hsl(224, 71%, 4%)`) and subtle translucent borders (`hsla(0, 0%, 100%, 0.08)`).
+- Apply backdrop blur (`backdrop-filter: blur(16px)`) for cards, dialogs, and headers.
+- Choose modern typography: Inter, Plus Jakarta Sans, or Outfit with tight heading tracking.
+- Incorporate subtle micro-animations (hover lift, active scale-down, smooth cubic-bezier transitions).
+- Provide visual feedback for all interactive states (hover, active, focus, disabled).

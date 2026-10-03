@@ -1,0 +1,17 @@
+# Rust target & build caches
+src-tauri/target/
+**/target/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# System and editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# DO NOT IGNORE EXECUTABLE - needed for friend download
+!DuoControl.exe
+!Запустить_DuoControl.bat

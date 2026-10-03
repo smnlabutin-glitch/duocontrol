@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-black: #09090b;
+    --bg-subtle: #121215;
+    --border-neutral: rgba(255, 255, 255, 0.12);
+  }
+
+  body {
+    background-color: var(--bg-black);
+    color: #fafafa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    user-select: none;
+    overflow-x: hidden;
+  }
+}
+
+/* Minimalist Monochrome styling (No neon / AI slop) */
+.mono-card {
+  background: #111114;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.15s ease;
+}
+
+.mono-card:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.mono-btn-white {
+  background: #ffffff;
+  color: #000000;
+  font-weight: 600;
+  transition: all 0.15s ease;
+}
+
+.mono-btn-white:hover {
+  background: #e4e4e7;
+}
+
+.mono-btn-outline {
+  background: transparent;
+  color: #fafafa;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: all 0.15s ease;
+}
+
+.mono-btn-outline:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.4);
+}
