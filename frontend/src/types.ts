@@ -2,6 +2,13 @@ export type PlayerRole = 'host_aimer' | 'client_pilot' | 'local_couch';
 
 export type ConnectionState = 'idle' | 'hosting' | 'connecting' | 'connected' | 'error';
 
+export interface LogEntry {
+  id: string;
+  time: string;
+  type: 'info' | 'network' | 'success' | 'warn' | 'error';
+  message: string;
+}
+
 export interface LatencyStats {
   pingMs: number;
   jitterMs: number;

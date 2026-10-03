@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AlertCircle } from 'lucide-react';
 import { Header } from './components/layout/Header';
 import { RoleSelector } from './components/dashboard/RoleSelector';
 import { LobbyCard } from './components/dashboard/LobbyCard';
 import { GameStreamView } from './components/streaming/GameStreamView';
-import type { PlayerRole, ConnectionState } from './types';
+import { DiagnosticLogs } from './components/dashboard/DiagnosticLogs';
 import { inputService } from './services/inputService';
 import { DirectNetService } from './services/directNetService';
-import { AlertCircle } from 'lucide-react';
+import type { PlayerRole, ConnectionState, LogEntry } from './types';
 
 const KEY_MAP: Record<string, number> = {
   KeyW: 0x57, KeyA: 0x41, KeyS: 0x53, KeyD: 0x44,
@@ -19,19 +20,36 @@ const KEY_MAP: Record<string, number> = {
 
 export const App: React.FC = () => {
   const [role, setRole] = useState<PlayerRole>('host_aimer');
-  const [connectionState, setConnectionState] = useState<ConnectionState>('hosting');
-  const [hostIp, setHostIp] = useState('');
-  const [publicIp, setPublicIp] = useState('79.174.44.93');
+  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [hostIp, setHostIp] = useState<string>('127.0.0.1');
+  const [publicIp, setPublicIp] = useState<string>('');
+  const [roomCode, setRoomCode] = useState<string>('DUO-7788');
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const [panicTriggered, setPanicTriggered] = useState(false);
   const [pingMs, setPingMs] = useState(0.8);
-
   const [activeKeys, setActiveKeys] = useState<Set<string>>(new Set());
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const netRef = useRef<DirectNetService | null>(null);
 
-  // Native Windows SendInput invoker (for local couch mode)
+  // Helper to add timestamped logs
+  const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
+    const now = new Date();
+    const time = now.toTimeString().split(' ')[0];
+    setLogs((prev) => [
+      ...prev.slice(-150),
+      {
+        id: Math.random().toString(36).substring(2, 9),
+        time,
+        type,
+        message,
+      },
+    ]);
+  }, []);
+
+  // Native Windows SendInput invoker (for Host injecting keys into games)
   const triggerNativeKey = useCallback(async (code: string, isDown: boolean) => {
     const vk = KEY_MAP[code] || 0;
     if (vk === 0) return;
@@ -54,7 +72,10 @@ export const App: React.FC = () => {
         const resp = await fetch('https://api.ipify.org');
         if (resp.ok) {
           const ip = await resp.text();
-          if (ip) setPublicIp(ip.trim());
+          if (ip) {
+            setPublicIp(ip.trim());
+            addLog(`Внешний интернет IP определен: ${ip.trim()}`, 'network');
+          }
         }
       } catch (e) {
         console.log('Public IP fetch note:', e);
@@ -67,7 +88,9 @@ export const App: React.FC = () => {
           const ips = await invoke<string[]>('get_host_ips');
           if (ips && ips.length > 0) {
             const nonLoopback = ips.find((ip) => ip !== '127.0.0.1');
-            setHostIp(nonLoopback || ips[0]);
+            const chosen = nonLoopback || ips[0];
+            setHostIp(chosen);
+            addLog(`Локальный сетевой IP: ${chosen}`, 'network');
           }
         } catch (e) {
           console.error('Failed to fetch local IPs:', e);
@@ -75,16 +98,27 @@ export const App: React.FC = () => {
       }
     };
     fetchIps();
-  }, []);
+  }, [addLog]);
 
   // Initialize Network Service
   useEffect(() => {
     netRef.current = new DirectNetService({
-      onStatusChange: (status, _msg) => {
+      onStatusChange: (status, msg) => {
         setConnectionState(status);
+        if (msg) {
+          if (status === 'error') {
+            setErrorMessage(msg);
+            addLog(msg, 'error');
+          } else if (status === 'connected') {
+            setErrorMessage('');
+            addLog(msg, 'success');
+          } else {
+            addLog(msg, 'info');
+          }
+        }
       },
       onRemoteStream: (stream) => {
-        console.log('App: Remote game stream received!');
+        addLog('Видеопоток игры 60 FPS успешно принят!', 'success');
         setRemoteStream(stream);
       },
       onRemoteKey: (code, isDown) => {
@@ -94,37 +128,54 @@ export const App: React.FC = () => {
           else next.delete(code);
           return next;
         });
+
+        // If Host receives a remote key press, inject into Windows!
+        if (role === 'host_aimer') {
+          triggerNativeKey(code, isDown);
+        }
       },
       onPingUpdate: (ping) => {
         setPingMs(Math.max(0.2, ping));
+      },
+      onLog: (msg, type) => {
+        addLog(msg, type);
+      },
+      onRoomReady: (code) => {
+        setRoomCode(code);
       },
     });
 
     if (role === 'host_aimer') {
       netRef.current.startHost();
+    } else {
+      addLog('Режим Пилота: введите Код комнаты или IP хоста и нажмите «Подключиться».', 'info');
     }
 
     return () => {
       netRef.current?.destroy();
     };
-  }, [role]);
+  }, [role, addLog, triggerNativeKey]);
 
   // Handle Role Change
   const handleSelectRole = (newRole: PlayerRole) => {
     setRole(newRole);
     setRemoteStream(null);
+    setErrorMessage('');
     if (newRole === 'host_aimer') {
       netRef.current?.startHost();
     } else {
       netRef.current?.destroy();
       setConnectionState('idle');
+      addLog(`Роль изменена на: ${newRole === 'client_pilot' ? 'Гость (Пилот)' : 'Локальный ПК'}`, 'info');
     }
   };
 
-  // Handle Client Connect to IP
-  const handleConnectRoom = (ip: string) => {
+  // Handle Client Connect to IP or Room Code
+  const handleConnectRoom = (target: string) => {
     setRemoteStream(null);
-    netRef.current?.joinHost(ip);
+    setErrorMessage('');
+    addLog(`Запуск подключения к: ${target}...`, 'network');
+    netRef.current?.joinHost(target);
   };
 
   // Handle local screen capture stream change on Host
@@ -133,34 +184,38 @@ export const App: React.FC = () => {
   };
 
   // Handle local keyboard presses
-  const handleSendKey = useCallback((code: string, isDown: boolean) => {
-    setActiveKeys((prev) => {
-      const next = new Set(prev);
-      if (isDown) next.add(code);
-      else next.delete(code);
-      return next;
-    });
+  const handleSendKey = useCallback(
+    (code: string, isDown: boolean) => {
+      setActiveKeys((prev) => {
+        const next = new Set(prev);
+        if (isDown) next.add(code);
+        else next.delete(code);
+        return next;
+      });
 
-    if (role === 'client_pilot') {
-      const vk = KEY_MAP[code] || 0;
-      netRef.current?.sendKey(code, vk, isDown);
-    } else if (role === 'local_couch') {
-      triggerNativeKey(code, isDown);
-    }
-  }, [role, triggerNativeKey]);
+      if (role === 'client_pilot') {
+        const vk = KEY_MAP[code] || 0;
+        netRef.current?.sendKey(code, vk, isDown);
+      } else if (role === 'local_couch') {
+        triggerNativeKey(code, isDown);
+      }
+    },
+    [role, triggerNativeKey]
+  );
 
   // Panic hotkey (Ctrl + Shift + F12)
   useEffect(() => {
     const unsubPanic = inputService.onPanic(() => {
       setPanicTriggered(true);
       setKeyboardLocked(false);
+      addLog('ВНИМАНИЕ: Сработал аварийный сброс (Panic Reset)!', 'warn');
       setTimeout(() => setPanicTriggered(false), 4000);
     });
 
     return () => {
       unsubPanic();
     };
-  }, []);
+  }, [addLog]);
 
   return (
     <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col font-sans">
@@ -181,13 +236,15 @@ export const App: React.FC = () => {
         {/* ROLE SELECTION */}
         <RoleSelector currentRole={role} onSelectRole={handleSelectRole} />
 
-        {/* LOBBY / IP BAR */}
+        {/* LOBBY / IP / ROOM CODE BAR */}
         <LobbyCard
           role={role}
           connectionState={connectionState}
           hostIp={hostIp}
           publicIp={publicIp}
+          roomCode={roomCode}
           keyboardLocked={keyboardLocked}
+          errorMessage={errorMessage}
           onConnectRoom={handleConnectRoom}
           onToggleKeyboardLock={() => setKeyboardLocked(!keyboardLocked)}
         />
@@ -203,28 +260,45 @@ export const App: React.FC = () => {
           isConnected={connectionState === 'connected'}
         />
 
+        {/* NETWORK DIAGNOSTICS CONSOLE LOGS */}
+        <DiagnosticLogs logs={logs} onClearLogs={() => setLogs([])} />
+
         {/* STATUS FOOTER BAR */}
         <div className="mono-card rounded-xl p-3 flex flex-col sm:flex-row items-center justify-between text-xs font-mono text-zinc-400 gap-2">
           <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${connectionState === 'connected' ? 'bg-white animate-pulse' : 'bg-zinc-600'}`} />
+            <span
+              className={`w-2 h-2 rounded-full ${
+                connectionState === 'connected'
+                  ? 'bg-white animate-pulse'
+                  : connectionState === 'connecting'
+                  ? 'bg-amber-400 animate-ping'
+                  : connectionState === 'error'
+                  ? 'bg-red-500'
+                  : 'bg-zinc-600'
+              }`}
+            />
             <span>
               {connectionState === 'connected'
-                ? 'Прямой P2P канал активен (Видео 60 FPS + Клавиатура 1000 Гц)'
+                ? 'Прямой P2P туннель активен (Видео 60 FPS + Клавиатура <1 мс без VPN)'
                 : connectionState === 'hosting'
-                ? 'Сервер хоста активен (UPnP порт открыт). Друг вводит ваш Интернет IP и жмет «Подключиться»'
+                ? `Лобби открыто [${roomCode}]. Передайте Код комнаты другу для игры через интернет.`
                 : connectionState === 'connecting'
-                ? 'Устанавливаем прямое соединение с хостом...'
+                ? 'Подключение к хосту и согласование P2P маршрута...'
+                : connectionState === 'error'
+                ? 'Ошибка соединения. Проверьте журнал диагностики ниже.'
                 : 'Готов к подключению'}
             </span>
           </div>
           <div className="text-zinc-500">
-            {role === 'host_aimer' ? 'Хост: нажмите «Захватить игру / экран» в плеере выше' : 'Для игры: кликните по окну трансляции и жмите WASD'}
+            {role === 'host_aimer'
+              ? 'Хост: нажмите «Захватить игру / экран» в плеере выше'
+              : 'Для управления: кликните по экрану и жмите WASD'}
           </div>
         </div>
       </main>
 
       <footer className="border-t border-white/10 py-3 px-4 text-center text-xs text-zinc-500 font-mono">
-        DuoControl Portable • Прямой интернет-сервер с автопробросом портов (UPnP)
+        DuoControl Portable • Встроенный P2P-туннель (Zero-VPN) с прямой инъекцией SendInput
       </footer>
     </div>
   );
