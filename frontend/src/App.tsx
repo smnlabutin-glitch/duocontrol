@@ -21,7 +21,7 @@ export const App: React.FC = () => {
   const [role, setRole] = useState<PlayerRole>('host_aimer');
   const [connectionState, setConnectionState] = useState<ConnectionState>('hosting');
   const [hostIp, setHostIp] = useState('');
-  const [availableIps, setAvailableIps] = useState<string[]>([]);
+  const [publicIp, setPublicIp] = useState('79.174.44.93');
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const [panicTriggered, setPanicTriggered] = useState(false);
   const [pingMs, setPingMs] = useState(0.8);
@@ -46,20 +46,31 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Fetch Host IP addresses from native Rust backend
+  // Fetch Host IP addresses from native Rust backend and Public IP
   useEffect(() => {
     const fetchIps = async () => {
+      // 1. Fetch public IP directly
+      try {
+        const resp = await fetch('https://api.ipify.org');
+        if (resp.ok) {
+          const ip = await resp.text();
+          if (ip) setPublicIp(ip.trim());
+        }
+      } catch (e) {
+        console.log('Public IP fetch note:', e);
+      }
+
+      // 2. Fetch local interface IPs from Rust
       if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
         try {
           const { invoke } = await import('@tauri-apps/api/core');
           const ips = await invoke<string[]>('get_host_ips');
           if (ips && ips.length > 0) {
-            setAvailableIps(ips);
             const nonLoopback = ips.find((ip) => ip !== '127.0.0.1');
             setHostIp(nonLoopback || ips[0]);
           }
         } catch (e) {
-          console.error('Failed to fetch IPs:', e);
+          console.error('Failed to fetch local IPs:', e);
         }
       }
     };
@@ -175,7 +186,7 @@ export const App: React.FC = () => {
           role={role}
           connectionState={connectionState}
           hostIp={hostIp}
-          availableIps={availableIps}
+          publicIp={publicIp}
           keyboardLocked={keyboardLocked}
           onConnectRoom={handleConnectRoom}
           onToggleKeyboardLock={() => setKeyboardLocked(!keyboardLocked)}
@@ -200,20 +211,20 @@ export const App: React.FC = () => {
               {connectionState === 'connected'
                 ? 'Прямой P2P канал активен (Видео 60 FPS + Клавиатура 1000 Гц)'
                 : connectionState === 'hosting'
-                ? 'Хост активен. Друг должен ввести ваш IP и нажать «Подключиться»'
+                ? 'Сервер хоста активен (UPnP порт открыт). Друг вводит ваш Интернет IP и жмет «Подключиться»'
                 : connectionState === 'connecting'
                 ? 'Устанавливаем прямое соединение с хостом...'
                 : 'Готов к подключению'}
             </span>
           </div>
           <div className="text-zinc-500">
-            {role === 'host_aimer' ? 'Хост: нажмите «Захватить игру / экран» в окне выше' : 'Для игры: кликните по окну трансляции и жмите WASD'}
+            {role === 'host_aimer' ? 'Хост: нажмите «Захватить игру / экран» в плеере выше' : 'Для игры: кликните по окну трансляции и жмите WASD'}
           </div>
         </div>
       </main>
 
       <footer className="border-t border-white/10 py-3 px-4 text-center text-xs text-zinc-500 font-mono">
-        DuoControl Portable • Прямой локальный/VPN сокет и видеопоток
+        DuoControl Portable • Прямой интернет-сервер с автопробросом портов (UPnP)
       </footer>
     </div>
   );
