@@ -57,12 +57,12 @@ impl ServerManager {
 
         // Attempt automatic UPnP router port forward
         if let Some(local_v4) = get_primary_ipv4() {
-            tokio::task::spawn_blocking(move || {
+            tauri::async_runtime::spawn_blocking(move || {
                 try_open_upnp(port, local_v4);
             });
         }
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             println!("DuoControl native server listening on ws://{}", addr);
 
             loop {
@@ -73,7 +73,7 @@ impl ServerManager {
                                 let b_tx_clone = b_tx.clone();
                                 let mut b_rx_clone = b_tx.subscribe();
 
-                                tokio::spawn(async move {
+                                tauri::async_runtime::spawn(async move {
                                     handle_connection(stream, peer_addr, b_tx_clone, &mut b_rx_clone).await;
                                 });
                             }

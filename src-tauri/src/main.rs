@@ -73,14 +73,15 @@ fn panic_reset() -> bool {
 fn main() {
     let server_manager = Arc::new(ServerManager::new());
 
-    // Automatically auto-start native server on port 44555 on startup
-    let sm_clone = server_manager.clone();
-    tokio::spawn(async move {
-        let _ = sm_clone.start(44555).await;
-    });
-
     tauri::Builder::default()
-        .manage(server_manager)
+        .manage(server_manager.clone())
+        .setup(move |_app| {
+            let sm_clone = server_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = sm_clone.start(44555).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_system_status,
             get_host_ips,
