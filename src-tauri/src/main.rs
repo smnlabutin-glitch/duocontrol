@@ -5,8 +5,11 @@ mod input;
 mod network;
 
 use input::injector::InputInjector;
+use network::server::{get_local_ip_addresses, ServerManager};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::State;
 
 static KEYBOARD_MUTED: AtomicBool = AtomicBool::new(false);
 
@@ -16,6 +19,7 @@ pub struct SystemStatus {
     pub keyboard_muted: bool,
     pub latency_mode: String,
     pub tick_rate_hz: u32,
+    pub local_ips: Vec<String>,
 }
 
 #[tauri::command]
@@ -25,7 +29,28 @@ fn get_system_status() -> SystemStatus {
         keyboard_muted: KEYBOARD_MUTED.load(Ordering::SeqCst),
         latency_mode: "Kernel-Direct 1000Hz".to_string(),
         tick_rate_hz: 1000,
+        local_ips: get_local_ip_addresses(),
     }
+}
+
+#[tauri::command]
+fn get_host_ips() -> Vec<String> {
+    get_local_ip_addresses()
+}
+
+#[tauri::command]
+async fn start_server(
+    port: Option<u16>,
+    server: State<'_, Arc<ServerManager>>,
+) -> Result<String, String> {
+    let p = port.unwrap_or(44555);
+    server.start(p).await
+}
+
+#[tauri::command]
+async fn stop_server(server: State<'_, Arc<ServerManager>>) -> Result<(), ()> {
+    server.stop().await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -46,9 +71,21 @@ fn panic_reset() -> bool {
 }
 
 fn main() {
+    let server_manager = Arc::new(ServerManager::new());
+
+    // Automatically auto-start native server on port 44555 on startup
+    let sm_clone = server_manager.clone();
+    tokio::spawn(async move {
+        let _ = sm_clone.start(44555).await;
+    });
+
     tauri::Builder::default()
+        .manage(server_manager)
         .invoke_handler(tauri::generate_handler![
             get_system_status,
+            get_host_ips,
+            start_server,
+            stop_server,
             inject_key_event,
             toggle_keyboard_mute,
             panic_reset

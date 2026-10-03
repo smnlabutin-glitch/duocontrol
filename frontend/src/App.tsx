@@ -5,10 +5,9 @@ import { LobbyCard } from './components/dashboard/LobbyCard';
 import { GameStreamView } from './components/streaming/GameStreamView';
 import type { PlayerRole, ConnectionState } from './types';
 import { inputService } from './services/inputService';
-import { P2PService } from './services/peerService';
+import { DirectNetService } from './services/directNetService';
 import { AlertCircle } from 'lucide-react';
 
-// Common Windows Virtual Key codes
 const KEY_MAP: Record<string, number> = {
   KeyW: 0x57, KeyA: 0x41, KeyS: 0x53, KeyD: 0x44,
   Space: 0x20, ShiftLeft: 0x10, ShiftRight: 0x10,
@@ -20,18 +19,19 @@ const KEY_MAP: Record<string, number> = {
 
 export const App: React.FC = () => {
   const [role, setRole] = useState<PlayerRole>('host_aimer');
-  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
-  const [roomCode, setRoomCode] = useState(() => 'DUO-' + Math.floor(1000 + Math.random() * 9000));
+  const [connectionState, setConnectionState] = useState<ConnectionState>('hosting');
+  const [hostIp, setHostIp] = useState('');
+  const [availableIps, setAvailableIps] = useState<string[]>([]);
   const [keyboardLocked, setKeyboardLocked] = useState(false);
   const [panicTriggered, setPanicTriggered] = useState(false);
-  const [pingMs, setPingMs] = useState(1.0);
+  const [pingMs, setPingMs] = useState(0.8);
 
   const [activeKeys, setActiveKeys] = useState<Set<string>>(new Set());
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
-  const p2pRef = useRef<P2PService | null>(null);
+  const netRef = useRef<DirectNetService | null>(null);
 
-  // Native Windows SendInput invoker
+  // Native Windows SendInput invoker (for local couch mode)
   const triggerNativeKey = useCallback(async (code: string, isDown: boolean) => {
     const vk = KEY_MAP[code] || 0;
     if (vk === 0) return;
@@ -46,65 +46,82 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Initialize P2P Service
+  // Fetch Host IP addresses from native Rust backend
   useEffect(() => {
-    p2pRef.current = new P2PService({
+    const fetchIps = async () => {
+      if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const ips = await invoke<string[]>('get_host_ips');
+          if (ips && ips.length > 0) {
+            setAvailableIps(ips);
+            const nonLoopback = ips.find((ip) => ip !== '127.0.0.1');
+            setHostIp(nonLoopback || ips[0]);
+          }
+        } catch (e) {
+          console.error('Failed to fetch IPs:', e);
+        }
+      }
+    };
+    fetchIps();
+  }, []);
+
+  // Initialize Network Service
+  useEffect(() => {
+    netRef.current = new DirectNetService({
       onStatusChange: (status, _msg) => {
         setConnectionState(status);
       },
       onRemoteStream: (stream) => {
-        console.log('Received remote game stream!');
+        console.log('App: Remote game stream received!');
         setRemoteStream(stream);
       },
       onRemoteKey: (code, isDown) => {
-        // Host receives key from remote client
         setActiveKeys((prev) => {
           const next = new Set(prev);
           if (isDown) next.add(code);
           else next.delete(code);
           return next;
         });
-
-        // Inject hardware key event into the Windows game
-        triggerNativeKey(code, isDown);
       },
       onPingUpdate: (ping) => {
-        setPingMs(Math.max(0.5, ping));
+        setPingMs(Math.max(0.2, ping));
       },
     });
 
-    return () => {
-      p2pRef.current?.destroy();
-    };
-  }, [triggerNativeKey]);
+    if (role === 'host_aimer') {
+      netRef.current.startHost();
+    }
 
-  // Handle Host Start/Stop
-  const handleToggleHost = () => {
-    if (connectionState === 'hosting' || connectionState === 'connected') {
-      p2pRef.current?.destroy();
-      setConnectionState('idle');
-      setRemoteStream(null);
+    return () => {
+      netRef.current?.destroy();
+    };
+  }, [role]);
+
+  // Handle Role Change
+  const handleSelectRole = (newRole: PlayerRole) => {
+    setRole(newRole);
+    setRemoteStream(null);
+    if (newRole === 'host_aimer') {
+      netRef.current?.startHost();
     } else {
-      const newCode = 'DUO-' + Math.floor(1000 + Math.random() * 9000);
-      setRoomCode(newCode);
-      p2pRef.current?.startHost(newCode, (code) => {
-        setRoomCode(code);
-      });
+      netRef.current?.destroy();
+      setConnectionState('idle');
     }
   };
 
-  // Handle Client Connect
-  const handleConnectRoom = (code: string) => {
+  // Handle Client Connect to IP
+  const handleConnectRoom = (ip: string) => {
     setRemoteStream(null);
-    p2pRef.current?.joinRoom(code);
+    netRef.current?.joinHost(ip);
   };
 
   // Handle local screen capture stream change on Host
   const handleLocalStreamChange = (stream: MediaStream | null) => {
-    p2pRef.current?.setLocalStream(stream);
+    netRef.current?.setLocalStream(stream);
   };
 
-  // Handle local keyboard presses when Client
+  // Handle local keyboard presses
   const handleSendKey = useCallback((code: string, isDown: boolean) => {
     setActiveKeys((prev) => {
       const next = new Set(prev);
@@ -114,19 +131,18 @@ export const App: React.FC = () => {
     });
 
     if (role === 'client_pilot') {
-      p2pRef.current?.sendKey(code, isDown);
+      const vk = KEY_MAP[code] || 0;
+      netRef.current?.sendKey(code, vk, isDown);
     } else if (role === 'local_couch') {
       triggerNativeKey(code, isDown);
     }
   }, [role, triggerNativeKey]);
 
-  // Listen for panic hotkey (Ctrl + Shift + F12)
+  // Panic hotkey (Ctrl + Shift + F12)
   useEffect(() => {
     const unsubPanic = inputService.onPanic(() => {
       setPanicTriggered(true);
       setKeyboardLocked(false);
-      setConnectionState('idle');
-      p2pRef.current?.destroy();
       setTimeout(() => setPanicTriggered(false), 4000);
     });
 
@@ -152,15 +168,15 @@ export const App: React.FC = () => {
 
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 space-y-4">
         {/* ROLE SELECTION */}
-        <RoleSelector currentRole={role} onSelectRole={setRole} />
+        <RoleSelector currentRole={role} onSelectRole={handleSelectRole} />
 
-        {/* LOBBY / ROOM BAR */}
+        {/* LOBBY / IP BAR */}
         <LobbyCard
           role={role}
           connectionState={connectionState}
-          roomCode={roomCode}
+          hostIp={hostIp}
+          availableIps={availableIps}
           keyboardLocked={keyboardLocked}
-          onToggleHost={handleToggleHost}
           onConnectRoom={handleConnectRoom}
           onToggleKeyboardLock={() => setKeyboardLocked(!keyboardLocked)}
         />
@@ -182,22 +198,22 @@ export const App: React.FC = () => {
             <span className={`w-2 h-2 rounded-full ${connectionState === 'connected' ? 'bg-white animate-pulse' : 'bg-zinc-600'}`} />
             <span>
               {connectionState === 'connected'
-                ? 'Прямой P2P WebRTC канал активен (Видео + Клавиатура 1000 Гц)'
+                ? 'Прямой P2P канал активен (Видео 60 FPS + Клавиатура 1000 Гц)'
                 : connectionState === 'hosting'
-                ? 'Лобби открыто. Ждем подключения второго игрока...'
+                ? 'Хост активен. Друг должен ввести ваш IP и нажать «Подключиться»'
                 : connectionState === 'connecting'
-                ? 'Устанавливаем прямое P2P соединение...'
-                : 'Готов к началу игры'}
+                ? 'Устанавливаем прямое соединение с хостом...'
+                : 'Готов к подключению'}
             </span>
           </div>
           <div className="text-zinc-500">
-            Для трансляции: Хост жмет «Захватить игру / экран»
+            {role === 'host_aimer' ? 'Хост: нажмите «Захватить игру / экран» в окне выше' : 'Для игры: кликните по окну трансляции и жмите WASD'}
           </div>
         </div>
       </main>
 
       <footer className="border-t border-white/10 py-3 px-4 text-center text-xs text-zinc-500 font-mono">
-        DuoControl Portable • Прямой P2P видеострим и ввод
+        DuoControl Portable • Прямой локальный/VPN сокет и видеопоток
       </footer>
     </div>
   );
