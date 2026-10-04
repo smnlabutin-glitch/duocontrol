@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::input::gamepad::VirtualGamepad;
 use crate::input::injector::InputInjector;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -149,8 +150,18 @@ async fn handle_connection(
                         let text = utf8_text.as_str();
                         if let Ok(mut payload) = serde_json::from_str::<WsPayload>(text) {
                             if payload.r#type == "key" {
-                                if let (Some(vk), Some(is_down)) = (payload.vk, payload.is_down) {
-                                    InputInjector::send_key(vk, is_down);
+                                if let Some(is_down) = payload.is_down {
+                                    let mut handled = false;
+                                    if let Some(ref code) = payload.code {
+                                        if VirtualGamepad::is_available() && VirtualGamepad::send_key(code, is_down) {
+                                            handled = true;
+                                        }
+                                    }
+                                    if !handled {
+                                        if let Some(vk) = payload.vk {
+                                            InputInjector::send_key(vk, is_down);
+                                        }
+                                    }
                                     payload.injected = Some(true);
                                     if let Ok(tagged_text) = serde_json::to_string(&payload) {
                                         let _ = broadcast_tx.send(tagged_text);
@@ -178,6 +189,7 @@ async fn handle_connection(
 
     // Safety: Release all pressed keys on disconnect to eliminate stuck keys
     InputInjector::release_all();
+    VirtualGamepad::release_all();
 }
 
 fn get_primary_ipv4() -> Option<Ipv4Addr> {

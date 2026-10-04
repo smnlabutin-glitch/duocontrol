@@ -82,8 +82,45 @@ async fn stop_server(server: State<'_, Arc<ServerManager>>) -> Result<(), ()> {
     Ok(())
 }
 
+use crate::input::gamepad::VirtualGamepad;
+use std::sync::Mutex;
+
+static CURRENT_INPUT_MODE: Mutex<String> = Mutex::new(String::new());
+
 #[tauri::command]
-fn inject_key_event(vk_code: u16, is_down: bool) -> bool {
+fn get_input_capabilities() -> serde_json::Value {
+    let has_vigem = VirtualGamepad::is_available();
+    let mode = CURRENT_INPUT_MODE.lock().map(|m| m.clone()).unwrap_or_default();
+    let active_mode = if mode.is_empty() {
+        if has_vigem { "gamepad" } else { "keyboard" }
+    } else {
+        &mode
+    };
+    serde_json::json!({
+        "has_vigem": has_vigem,
+        "current_mode": active_mode,
+        "keyboard_muted": KEYBOARD_MUTED.load(Ordering::SeqCst),
+    })
+}
+
+#[tauri::command]
+fn set_input_mode(mode: String) -> String {
+    if let Ok(mut lock) = CURRENT_INPUT_MODE.lock() {
+        *lock = mode.clone();
+    }
+    mode
+}
+
+#[tauri::command]
+fn inject_key_event(vk_code: u16, is_down: bool, code: Option<String>) -> bool {
+    let mode = CURRENT_INPUT_MODE.lock().map(|m| m.clone()).unwrap_or_default();
+    if mode == "gamepad" {
+        if let Some(ref c) = code {
+            if VirtualGamepad::send_key(c, is_down) {
+                return true;
+            }
+        }
+    }
     InputInjector::send_key(vk_code, is_down)
 }
 
@@ -97,12 +134,14 @@ fn toggle_keyboard_mute(mute: bool) -> bool {
 fn panic_reset() -> bool {
     KEYBOARD_MUTED.store(false, Ordering::SeqCst);
     InputInjector::release_all();
+    VirtualGamepad::release_all();
     true
 }
 
 #[tauri::command]
 fn release_all_keys() -> bool {
     InputInjector::release_all();
+    VirtualGamepad::release_all();
     true
 }
 
@@ -136,7 +175,9 @@ fn main() {
             inject_key_event,
             toggle_keyboard_mute,
             panic_reset,
-            release_all_keys
+            release_all_keys,
+            get_input_capabilities,
+            set_input_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running DuoControl application");

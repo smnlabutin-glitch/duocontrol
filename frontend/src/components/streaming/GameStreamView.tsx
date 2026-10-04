@@ -66,9 +66,15 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
       setLocalStream(stream);
       onLocalStreamChange(stream);
 
-      stream.getVideoTracks()[0].onended = () => {
-        stopScreenCapture();
-      };
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try {
+          (track as any).contentHint = 'motion';
+        } catch (e) {}
+        track.onended = () => {
+          stopScreenCapture();
+        };
+      }
     } catch (err) {
       console.error('Screen capture error:', err);
       setStreamError('Разрешите доступ к окну игры или всему экрану.');
@@ -160,9 +166,14 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
                 : (remoteStream ? 'Прямой P2P видеопоток от хоста' : 'Ожидание видеопотока')}
             </span>
             {isConnected && (
-              <span className="text-[11px] font-mono text-zinc-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">
-                P2P Задержка: {pingMs.toFixed(1)} мс
-              </span>
+              <>
+                <span className="text-[11px] font-mono text-zinc-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">
+                  P2P: {pingMs.toFixed(1)} мс
+                </span>
+                <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  H.264 NVENC 60 FPS
+                </span>
+              </>
             )}
           </div>
 

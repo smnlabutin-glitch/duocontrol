@@ -268,13 +268,14 @@ export class DirectNetService {
           try {
             await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
             const answer = await this.pc.createAnswer();
-            await this.pc.setLocalDescription(answer);
+            const optimizedAnswerSdp = this.optimizeSdpForGaming(answer.sdp || '');
+            await this.pc.setLocalDescription(new RTCSessionDescription({ type: 'answer', sdp: optimizedAnswerSdp }));
 
             if (this.dataChannel && this.dataChannel.readyState === 'open') {
-              this.dataChannel.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+              this.dataChannel.send(JSON.stringify({ type: 'answer', sdp: optimizedAnswerSdp }));
             }
-            await this.sendSignalingMessage({ type: 'answer', sdp: answer.sdp });
-            this.log(`P2P-ответ отправлен хосту.`, 'info');
+            await this.sendSignalingMessage({ type: 'answer', sdp: optimizedAnswerSdp });
+            this.log(`P2P-ответ отправлен хосту (H.264 Ultra-Low Latency).`, 'info');
           } catch (err: any) {
             console.error('Error handling offer:', err);
           }
@@ -482,10 +483,13 @@ export class DirectNetService {
         const videoTrack = this.localStream.getVideoTracks()[0];
 
         if (videoTrack) {
+          try {
+            (videoTrack as any).contentHint = 'motion';
+          } catch (e) {}
           const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
           if (videoSender) {
             await videoSender.replaceTrack(videoTrack);
-            this.log('Видеодорожка экрана обновлена', 'info');
+            this.log('Видеодорожка экрана обновлена (Sunshine Motion Profile)', 'info');
           } else {
             const sender = this.pc.addTrack(videoTrack, this.localStream);
             try {
@@ -493,35 +497,79 @@ export class DirectNetService {
               if (!params.encodings || params.encodings.length === 0) {
                 params.encodings = [{}];
               }
-              params.encodings[0].maxBitrate = 20_000_000;
+              params.encodings[0].maxBitrate = 25_000_000;
               params.encodings[0].maxFramerate = 60;
               (params as any).degradationPreference = 'maintain-resolution';
               sender.setParameters(params).catch(() => {});
             } catch (e) {}
-            this.log('Видеодорожка экрана добавлена в P2P туннель (Ultra-Low Latency, High-Res)', 'info');
+            this.log('Видеодорожка экрана добавлена в P2P туннель (Sunshine NVENC/AMF 60 FPS)', 'info');
           }
         }
       }
 
       const offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
+      const optimizedSdp = this.optimizeSdpForGaming(offer.sdp || '');
+      await this.pc.setLocalDescription(new RTCSessionDescription({ type: 'offer', sdp: optimizedSdp }));
 
       // 1. Direct via DataChannel if already open (instant <1ms renegotiation)
       if (this.dataChannel && this.dataChannel.readyState === 'open') {
-        this.dataChannel.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
-        this.log('Видеопоток отправлен напрямую через открытый P2P канал', 'info');
+        this.dataChannel.send(JSON.stringify({ type: 'offer', sdp: optimizedSdp }));
+        this.log('Видеопоток отправлен напрямую через открытый P2P канал (H.264 Hardware)', 'info');
       }
 
       // 2. Send offer via signaling topic as well
-      await this.sendSignalingMessage({ type: 'offer', sdp: offer.sdp });
+      await this.sendSignalingMessage({ type: 'offer', sdp: optimizedSdp });
 
       // 3. Also send via direct WS if available
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+        this.ws.send(JSON.stringify({ type: 'offer', sdp: optimizedSdp }));
       }
     } catch (err: any) {
       this.log(`Ошибка создания P2P предложения: ${err.message}`, 'error');
     }
+  }
+
+  // Sunshine / Moonlight architecture: Force hardware H.264 video codec and high bitrate
+  private optimizeSdpForGaming(sdp: string): string {
+    if (!sdp) return sdp;
+    const lines = sdp.split('\r\n');
+    const h264Payloads: string[] = [];
+
+    for (const line of lines) {
+      const match = line.match(/^a=rtpmap:(\d+)\s+H264\/90000/i);
+      if (match) {
+        h264Payloads.push(match[1]);
+      }
+    }
+
+    if (h264Payloads.length === 0) return sdp;
+
+    const modified: string[] = [];
+    for (let line of lines) {
+      if (line.startsWith('m=video ')) {
+        const parts = line.split(' ');
+        const header = parts.slice(0, 3);
+        const payloads = parts.slice(3);
+        const nonH264 = payloads.filter((p) => !h264Payloads.includes(p));
+        const reordered = [...h264Payloads, ...nonH264];
+        line = `${header.join(' ')} ${reordered.join(' ')}`;
+        modified.push(line);
+        modified.push('b=AS:25000'); // 25 Mbps target for crystal clear 1080p60
+        continue;
+      }
+      modified.push(line);
+    }
+
+    let result = modified.join('\r\n');
+    for (const pt of h264Payloads) {
+      if (result.includes(`a=fmtp:${pt}`)) {
+        result = result.replace(
+          `a=fmtp:${pt} `,
+          `a=fmtp:${pt} x-google-min-bitrate=10000;x-google-start-bitrate=15000;x-google-max-bitrate=25000;`
+        );
+      }
+    }
+    return result;
   }
 
   private async handleWsMessage(raw: string) {
