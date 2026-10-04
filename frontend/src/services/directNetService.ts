@@ -174,9 +174,23 @@ export class DirectNetService {
     this.eventSource.onmessage = async (event) => {
       try {
         const parsed = JSON.parse(event.data);
-        if (parsed.event !== 'message' || !parsed.message) return;
+        if (parsed.event !== 'message') return;
 
-        const data = JSON.parse(parsed.message);
+        let jsonStr = parsed.message;
+        // If ntfy converted payload to an attachment file (occurs when SDP > 4096 bytes)
+        if (parsed.attachment && parsed.attachment.url) {
+          try {
+            const resp = await fetch(parsed.attachment.url);
+            jsonStr = await resp.text();
+          } catch (e) {
+            console.error('Signaling attachment download error:', e);
+            return;
+          }
+        }
+
+        if (!jsonStr || jsonStr.startsWith('You received a file:')) return;
+
+        const data = JSON.parse(jsonStr);
 
         // Ignore messages sent by self
         if (data.sender === this.clientId) return;
@@ -228,19 +242,35 @@ export class DirectNetService {
     } else if (data.type === 'offer') {
       if (!this.isHost) {
         this.log(`Получено P2P-предложение от хоста. Принятие...`, 'info');
-        this.initWebRTC(false);
+        if (!this.pc || this.pc.signalingState === 'closed') {
+          this.initWebRTC(false);
+        }
         if (this.pc) {
-          await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-          const answer = await this.pc.createAnswer();
-          await this.pc.setLocalDescription(answer);
-          await this.sendSignalingMessage({ type: 'answer', sdp: answer.sdp });
-          this.log(`P2P-ответ отправлен хосту.`, 'info');
+          try {
+            await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+            const answer = await this.pc.createAnswer();
+            await this.pc.setLocalDescription(answer);
+
+            if (this.dataChannel && this.dataChannel.readyState === 'open') {
+              this.dataChannel.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+            }
+            await this.sendSignalingMessage({ type: 'answer', sdp: answer.sdp });
+            this.log(`P2P-ответ отправлен хосту.`, 'info');
+          } catch (err: any) {
+            console.error('Error handling offer:', err);
+          }
         }
       }
     } else if (data.type === 'answer') {
       if (this.isHost && this.pc) {
-        this.log(`P2P-ответ получен! Завершение установки туннеля...`, 'info');
-        await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+        try {
+          if (this.pc.signalingState === 'have-local-offer') {
+            this.log(`P2P-ответ получен! Видеотуннель согласован.`, 'info');
+            await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+          }
+        } catch (err) {
+          console.error('Error setting remote answer:', err);
+        }
       }
     } else if (data.type === 'ice') {
       if (this.pc && data.candidate) {
@@ -284,6 +314,10 @@ export class DirectNetService {
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
+        // Send via direct DataChannel if available
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+          this.dataChannel.send(JSON.stringify({ type: 'ice', candidate: event.candidate }));
+        }
         // Send via signaling
         this.sendSignalingMessage({ type: 'ice', candidate: event.candidate });
         // Also send via direct WS if open
@@ -315,13 +349,22 @@ export class DirectNetService {
         this.log(`P2P DataChannel для клавиатуры открыт! Задержка ввода <1 мс.`, 'success');
       };
 
-      this.dataChannel.onmessage = (event) => {
+      this.dataChannel.onmessage = async (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'key') {
             this.callbacks.onRemoteKey(data.code, data.is_down);
           } else if (data.type === 'ping') {
             this.dataChannel?.send(JSON.stringify({ type: 'pong', time: data.time }));
+          } else if (data.type === 'answer') {
+            this.log(`Пилот принял видеопоток через DataChannel!`, 'success');
+            if (this.pc && this.pc.signalingState === 'have-local-offer') {
+              await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+            }
+          } else if (data.type === 'ice') {
+            if (this.pc && data.candidate) {
+              await this.pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+            }
           }
         } catch (e) {
           console.error('DataChannel parse error:', e);
@@ -338,12 +381,25 @@ export class DirectNetService {
           this.startPingLoop();
         };
 
-        this.dataChannel.onmessage = (event) => {
+        this.dataChannel.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'pong') {
               const ping = performance.now() - data.time;
               this.callbacks.onPingUpdate(ping);
+            } else if (data.type === 'offer') {
+              this.log(`Получен P2P видеопоток через DataChannel! Принятие...`, 'info');
+              if (this.pc) {
+                await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+                const answer = await this.pc.createAnswer();
+                await this.pc.setLocalDescription(answer);
+                this.dataChannel?.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+                this.log(`P2P подтверждение видеопотока отправлено хосту!`, 'success');
+              }
+            } else if (data.type === 'ice') {
+              if (this.pc && data.candidate) {
+                await this.pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+              }
             }
           } catch (e) {
             console.error('DataChannel msg error:', e);
@@ -356,6 +412,9 @@ export class DirectNetService {
         this.log(`Видеопоток экрана 60 FPS успешно принят!`, 'success');
         if (event.streams && event.streams[0]) {
           this.callbacks.onRemoteStream(event.streams[0]);
+        } else if (event.track) {
+          const inboundStream = new MediaStream([event.track]);
+          this.callbacks.onRemoteStream(inboundStream);
         }
       };
     }
@@ -371,30 +430,42 @@ export class DirectNetService {
   }
 
   public async startWebRtcOffer() {
-    if (!this.pc) {
+    if (!this.pc || this.pc.signalingState === 'closed') {
       this.initWebRTC(true);
     }
     if (!this.pc) return;
 
     try {
-      // Add local stream tracks if available
+      // Add or update local stream tracks if available
       if (this.localStream) {
         const senders = this.pc.getSenders();
-        senders.forEach((s) => this.pc?.removeTrack(s));
-        this.localStream.getTracks().forEach((track) => {
-          if (this.pc && this.localStream) {
-            this.pc.addTrack(track, this.localStream);
+        const videoTrack = this.localStream.getVideoTracks()[0];
+
+        if (videoTrack) {
+          const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            await videoSender.replaceTrack(videoTrack);
+            this.log('Видеодорожка экрана обновлена', 'info');
+          } else {
+            this.pc.addTrack(videoTrack, this.localStream);
+            this.log('Видеодорожка экрана добавлена в P2P туннель', 'info');
           }
-        });
+        }
       }
 
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
 
-      // Send offer via signaling
+      // 1. Direct via DataChannel if already open (instant <1ms renegotiation)
+      if (this.dataChannel && this.dataChannel.readyState === 'open') {
+        this.dataChannel.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+        this.log('Видеопоток отправлен напрямую через открытый P2P канал', 'info');
+      }
+
+      // 2. Send offer via signaling topic as well
       await this.sendSignalingMessage({ type: 'offer', sdp: offer.sdp });
 
-      // Also send via direct WS if available
+      // 3. Also send via direct WS if available
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
       }
