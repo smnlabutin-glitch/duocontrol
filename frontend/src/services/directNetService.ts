@@ -3,7 +3,7 @@ import type { LogEntry } from '../types';
 export interface DirectNetCallbacks {
   onStatusChange: (status: 'idle' | 'hosting' | 'connecting' | 'connected' | 'error', msg?: string) => void;
   onRemoteStream: (stream: MediaStream) => void;
-  onRemoteKey: (code: string, isDown: boolean, vk?: number) => void;
+  onRemoteKey: (code: string, isDown: boolean, vk?: number, alreadyInjected?: boolean) => void;
   onPingUpdate: (pingMs: number) => void;
   onLog: (message: string, type?: LogEntry['type']) => void;
   onRoomReady?: (roomCode: string) => void;
@@ -408,7 +408,11 @@ export class DirectNetService {
         this.dataChannel.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data);
-            if (data.type === 'pong') {
+            if (data.type === 'key') {
+              if (this.isHost) {
+                this.callbacks.onRemoteKey(data.code, data.is_down, data.vk, false);
+              }
+            } else if (data.type === 'pong') {
               if (data.target === this.clientId) {
                 const ping = Math.max(0.5, performance.now() - data.time);
                 this.callbacks.onPingUpdate(ping);
@@ -489,12 +493,12 @@ export class DirectNetService {
               if (!params.encodings || params.encodings.length === 0) {
                 params.encodings = [{}];
               }
-              params.encodings[0].maxBitrate = 14_000_000;
+              params.encodings[0].maxBitrate = 20_000_000;
               params.encodings[0].maxFramerate = 60;
-              (params as any).degradationPreference = 'maintain-framerate';
+              (params as any).degradationPreference = 'maintain-resolution';
               sender.setParameters(params).catch(() => {});
             } catch (e) {}
-            this.log('Видеодорожка экрана добавлена в P2P туннель (Ultra-Low Latency)', 'info');
+            this.log('Видеодорожка экрана добавлена в P2P туннель (Ultra-Low Latency, High-Res)', 'info');
           }
         }
       }
@@ -527,7 +531,9 @@ export class DirectNetService {
 
       if (data.type === 'key') {
         if (this.isHost) {
-          this.callbacks.onRemoteKey(data.code, data.is_down, data.vk);
+          // Native Rust server already directly injected keys received over direct WS
+          const alreadyInjected = data.injected ?? true;
+          this.callbacks.onRemoteKey(data.code, data.is_down, data.vk, alreadyInjected);
         }
       } else if (data.type === 'ping') {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -606,6 +612,11 @@ export class DirectNetService {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('release_all_keys').catch(() => {});
+      }).catch(() => {});
     }
   }
 }

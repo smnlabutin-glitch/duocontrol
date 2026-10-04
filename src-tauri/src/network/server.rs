@@ -24,6 +24,8 @@ pub struct WsPayload {
     pub candidate: Option<serde_json::Value>,
     #[serde(default)]
     pub time: Option<f64>,
+    #[serde(default)]
+    pub injected: Option<bool>,
 }
 
 pub struct ServerManager {
@@ -145,10 +147,15 @@ async fn handle_connection(
                 match msg {
                     Some(Ok(Message::Text(utf8_text))) => {
                         let text = utf8_text.as_str();
-                        if let Ok(payload) = serde_json::from_str::<WsPayload>(text) {
+                        if let Ok(mut payload) = serde_json::from_str::<WsPayload>(text) {
                             if payload.r#type == "key" {
                                 if let (Some(vk), Some(is_down)) = (payload.vk, payload.is_down) {
                                     InputInjector::send_key(vk, is_down);
+                                    payload.injected = Some(true);
+                                    if let Ok(tagged_text) = serde_json::to_string(&payload) {
+                                        let _ = broadcast_tx.send(tagged_text);
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -168,6 +175,9 @@ async fn handle_connection(
             }
         }
     }
+
+    // Safety: Release all pressed keys on disconnect to eliminate stuck keys
+    InputInjector::release_all();
 }
 
 fn get_primary_ipv4() -> Option<Ipv4Addr> {

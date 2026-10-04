@@ -96,6 +96,13 @@ fn toggle_keyboard_mute(mute: bool) -> bool {
 #[tauri::command]
 fn panic_reset() -> bool {
     KEYBOARD_MUTED.store(false, Ordering::SeqCst);
+    InputInjector::release_all();
+    true
+}
+
+#[tauri::command]
+fn release_all_keys() -> bool {
+    InputInjector::release_all();
     true
 }
 
@@ -128,7 +135,8 @@ fn main() {
             stop_server,
             inject_key_event,
             toggle_keyboard_mute,
-            panic_reset
+            panic_reset,
+            release_all_keys
         ])
         .run(tauri::generate_context!())
         .expect("error while running DuoControl application");

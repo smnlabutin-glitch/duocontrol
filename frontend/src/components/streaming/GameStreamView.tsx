@@ -42,18 +42,6 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
       const vid = videoRef.current;
       vid.srcObject = remoteStream;
       vid.play().catch(console.error);
-
-      // Real-time synchronization: jump to live buffer edge if video lags behind
-      const interval = setInterval(() => {
-        if (vid.buffered && vid.buffered.length > 0) {
-          const liveEdge = vid.buffered.end(vid.buffered.length - 1);
-          if (liveEdge - vid.currentTime > 0.25) {
-            vid.currentTime = liveEdge;
-          }
-        }
-      }, 1000);
-
-      return () => clearInterval(interval);
     }
   }, [role, remoteStream]);
 

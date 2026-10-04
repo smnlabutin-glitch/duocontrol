@@ -131,6 +131,9 @@ export const LobbyCard: React.FC<LobbyCardProps> = ({
                 )}
               </button>
             </div>
+            <span className="text-[11px] font-mono text-zinc-400">
+              💡 Рекомендуется: ввести <strong>Код комнаты (DUO-...)</strong> хоста для игры без VPN и без открытия портов.
+            </span>
             {errorMessage && (
               <div className="flex items-center gap-1.5 text-xs font-mono text-red-400">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />

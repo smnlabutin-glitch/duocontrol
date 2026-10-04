@@ -142,7 +142,7 @@ export const App: React.FC = () => {
         addLog('Видеопоток игры 60 FPS успешно принят!', 'success');
         setRemoteStream(stream);
       },
-      onRemoteKey: (code, isDown, remoteVk) => {
+      onRemoteKey: (code, isDown, remoteVk, alreadyInjected) => {
         setActiveKeys((prev) => {
           const next = new Set(prev);
           if (isDown) next.add(code);
@@ -150,8 +150,8 @@ export const App: React.FC = () => {
           return next;
         });
 
-        // If Host receives a remote key press, inject into Windows!
-        if (role === 'host_aimer') {
+        // If Host receives a remote key press, inject into Windows only if not already injected by native Rust backend!
+        if (role === 'host_aimer' && !alreadyInjected) {
           triggerNativeKey(code, isDown, remoteVk);
         }
       },
