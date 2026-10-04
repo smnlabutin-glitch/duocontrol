@@ -121,9 +121,18 @@ export class DirectNetService {
     this.ws.onopen = () => {
       if (connectionTimeout) clearTimeout(connectionTimeout);
       this.log(`Прямое соединение с ${addr} успешно установлено!`, 'success');
-      this.callbacks.onStatusChange('connected', 'Связь с хостом активна (LAN / Белый IP)');
+      this.callbacks.onStatusChange('connected', 'Связь с хостом активна (Radmin VPN / LAN)');
       this.initWebRTC(false);
       this.startPingLoop();
+
+      // Notify host that guest connected over Direct IP / Radmin
+      this.ws?.send(
+        JSON.stringify({
+          type: 'client_joined',
+          sender: this.clientId,
+          time: Date.now(),
+        })
+      );
     };
 
     this.ws.onmessage = async (event) => {
@@ -156,7 +165,7 @@ export class DirectNetService {
   // Subscribe to ntfy.sh public signaling topic for WebRTC negotiation
   private subscribeSignaling(code: string) {
     const topic = `duocontrol_${code.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-    const sseUrl = `https://ntfy.sh/${topic}/sse`;
+    const sseUrl = `https://ntfy.sh/${topic}/sse?since=now`;
 
     this.log(`Подключение к каналу сигнализации: ${topic}`, 'network');
 
@@ -210,14 +219,24 @@ export class DirectNetService {
     };
   }
 
-  // Post message to signaling topic
+  // Post message to signaling topic and direct WS
   private async sendSignalingMessage(payload: any) {
+    payload.sender = this.clientId;
+    payload.msgId = Math.random().toString(36).substring(2, 11);
+
+    // 1. Direct native WebSocket if connected (Radmin VPN / LAN)
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(payload));
+      } catch (err) {
+        console.error('Direct WS signaling error:', err);
+      }
+    }
+
+    // 2. Cloud signaling topic (ntfy)
     if (!this.roomCode) return;
     const topic = `duocontrol_${this.roomCode.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     const url = `https://ntfy.sh/${topic}`;
-
-    payload.sender = this.clientId;
-    payload.msgId = Math.random().toString(36).substring(2, 11);
 
     try {
       await fetch(url, {
@@ -474,9 +493,11 @@ export class DirectNetService {
     }
   }
 
-  private handleWsMessage(raw: string) {
+  private async handleWsMessage(raw: string) {
     try {
       const data = JSON.parse(raw);
+      if (data.sender === this.clientId) return;
+
       if (data.type === 'key') {
         if (this.isHost) {
           this.callbacks.onRemoteKey(data.code, data.is_down);
@@ -488,6 +509,8 @@ export class DirectNetService {
       } else if (data.type === 'pong') {
         const ping = performance.now() - data.time;
         this.callbacks.onPingUpdate(ping);
+      } else if (['client_joined', 'offer', 'answer', 'ice'].includes(data.type)) {
+        await this.handleSignalingMessage(data);
       }
     } catch (e) {
       console.error('WS message error:', e);
