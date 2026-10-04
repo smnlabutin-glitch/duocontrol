@@ -1,8 +1,8 @@
 //! Windows SendInput keyboard injection engine
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 #[cfg(windows)]
 use std::mem::size_of;
@@ -17,7 +17,15 @@ impl InputInjector {
             // Map virtual key to hardware scan code for DirectX / 3D game engines
             let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
 
+            let is_extended = matches!(
+                vk,
+                0x21..=0x2E | 0x6F | 0xA1 | 0xA3 | 0xA5
+            );
+
             let mut flags = KEYEVENTF_SCANCODE;
+            if is_extended {
+                flags |= KEYEVENTF_EXTENDEDKEY;
+            }
             if !is_down {
                 flags |= KEYEVENTF_KEYUP;
             }

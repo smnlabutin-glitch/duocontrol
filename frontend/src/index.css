@@ -49,3 +49,15 @@
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.4);
 }
+
+/* Prevent blue tint / filter in Fullscreen mode */
+:fullscreen,
+::backdrop,
+:fullscreen video,
+video {
+  background-color: #000000 !important;
+  filter: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  color-interpolation: sRGB !important;
+}

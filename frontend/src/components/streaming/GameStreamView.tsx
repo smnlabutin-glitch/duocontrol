@@ -5,7 +5,7 @@ import type { PlayerRole } from '../../types';
 interface GameStreamViewProps {
   role: PlayerRole;
   pingMs: number;
-  onSendKey: (key: string, isDown: boolean) => void;
+  onSendKey: (key: string, isDown: boolean, keyCode?: number) => void;
   activeKeys: Set<string>;
   remoteStream: MediaStream | null;
   onLocalStreamChange: (stream: MediaStream | null) => void;
@@ -25,22 +25,47 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // If Client receives remote stream, bind it to video element
+  // Track fullscreen state
+  useEffect(() => {
+    const handleFs = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFs);
+    return () => document.removeEventListener('fullscreenchange', handleFs);
+  }, []);
+
+  // If Client receives remote stream, bind it to video element with zero buffer
   useEffect(() => {
     if (role === 'client_pilot' && remoteStream && videoRef.current) {
-      videoRef.current.srcObject = remoteStream;
-      videoRef.current.play().catch(console.error);
+      const vid = videoRef.current;
+      vid.srcObject = remoteStream;
+      vid.play().catch(console.error);
+
+      // Real-time synchronization: jump to live buffer edge if video lags behind
+      const interval = setInterval(() => {
+        if (vid.buffered && vid.buffered.length > 0) {
+          const liveEdge = vid.buffered.end(vid.buffered.length - 1);
+          if (liveEdge - vid.currentTime > 0.25) {
+            vid.currentTime = liveEdge;
+          }
+        }
+      }, 1000);
+
+      return () => clearInterval(interval);
     }
   }, [role, remoteStream]);
 
-  // Host starts screen capture
+  // Host starts screen capture (optimized to 1080p60 to eliminate 2-3s encoder backlog)
   const startScreenCapture = async () => {
     try {
       setStreamError(null);
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal: 60, max: 120 },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 60, max: 60 },
         },
         audio: false,
       });
@@ -84,22 +109,44 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
 
   // Keyboard capture while watching the stream
   useEffect(() => {
+    const pressedKeys = new Set<string>();
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['Space', 'ArrowUp', 'ArrowDown', 'Tab'].includes(e.code)) {
+      // Prevent browser default scrolling / navigation
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'AltLeft', 'AltRight'].includes(e.code)) {
         e.preventDefault();
       }
-      onSendKey(e.code, true);
+
+      // CRITICAL FIX: Ignore browser auto-repeat events when holding a key!
+      // This stops flooding the input queue which causes keys to stick/freeze!
+      if (e.repeat) {
+        return;
+      }
+
+      pressedKeys.add(e.code);
+      onSendKey(e.code, true, e.keyCode || 0);
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      onSendKey(e.code, false);
+      pressedKeys.delete(e.code);
+      onSendKey(e.code, false, e.keyCode || 0);
+    };
+
+    // CRITICAL FIX: When window loses focus (Alt-Tab, click outside), release ALL keys so none remain stuck
+    const handleBlur = () => {
+      pressedKeys.forEach((code) => {
+        onSendKey(code, false, 0);
+      });
+      pressedKeys.clear();
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
     };
   }, [onSendKey]);
 
@@ -109,62 +156,67 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
   return (
     <div
       ref={containerRef}
-      className="mono-card rounded-xl overflow-hidden relative flex flex-col bg-black border border-white/10"
+      style={{ backgroundColor: '#000000', filter: 'none' }}
+      className={`mono-card overflow-hidden relative flex flex-col bg-black ${
+        isFullscreen ? 'fixed inset-0 z-[9999] rounded-none border-none' : 'rounded-xl border border-white/10'
+      }`}
     >
-      {/* Top Stream Bar */}
-      <div className="px-4 py-2.5 bg-[#121215] border-b border-white/10 flex items-center justify-between z-10">
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${hasVideoActive ? 'bg-white animate-pulse' : 'bg-zinc-600'}`} />
-          <span className="font-mono text-xs uppercase tracking-wider text-zinc-300">
-            {role === 'host_aimer'
-              ? (localStream ? 'Вы транслируете экран (60 FPS)' : 'Окно игры (Трансляция)')
-              : (remoteStream ? 'Прямой P2P видеопоток от хоста' : 'Ожидание видеопотока')}
-          </span>
-          {isConnected && (
-            <span className="text-[11px] font-mono text-zinc-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">
-              P2P Задержка: {pingMs.toFixed(1)} мс
+      {/* Top Stream Bar - hidden in fullscreen for immersion and no tint */}
+      {!isFullscreen && (
+        <div className="px-4 py-2.5 bg-[#121215] border-b border-white/10 flex items-center justify-between z-10">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${hasVideoActive ? 'bg-white animate-pulse' : 'bg-zinc-600'}`} />
+            <span className="font-mono text-xs uppercase tracking-wider text-zinc-300">
+              {role === 'host_aimer'
+                ? (localStream ? 'Вы транслируете экран (60 FPS)' : 'Окно игры (Трансляция)')
+                : (remoteStream ? 'Прямой P2P видеопоток от хоста' : 'Ожидание видеопотока')}
             </span>
-          )}
-        </div>
+            {isConnected && (
+              <span className="text-[11px] font-mono text-zinc-400 bg-white/5 px-2 py-0.5 rounded border border-white/5">
+                P2P Задержка: {pingMs.toFixed(1)} мс
+              </span>
+            )}
+          </div>
 
-        <div className="flex items-center gap-2">
-          {role === 'host_aimer' ? (
-            localStream ? (
-              <button
-                type="button"
-                onClick={stopScreenCapture}
-                className="px-3 py-1 bg-red-600/20 text-red-300 hover:bg-red-600/30 border border-red-500/30 rounded text-xs font-mono flex items-center gap-1.5 cursor-pointer"
-              >
-                <StopCircle className="w-3.5 h-3.5" />
-                Остановить захват
-              </button>
+          <div className="flex items-center gap-2">
+            {role === 'host_aimer' ? (
+              localStream ? (
+                <button
+                  type="button"
+                  onClick={stopScreenCapture}
+                  className="px-3 py-1 bg-red-600/20 text-red-300 hover:bg-red-600/30 border border-red-500/30 rounded text-xs font-mono flex items-center gap-1.5 cursor-pointer"
+                >
+                  <StopCircle className="w-3.5 h-3.5" />
+                  Остановить захват
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startScreenCapture}
+                  className="px-3 py-1 mono-btn-white rounded text-xs font-mono flex items-center gap-1.5 cursor-pointer"
+                >
+                  <MonitorPlay className="w-3.5 h-3.5" />
+                  Захватить игру / экран
+                </button>
+              )
             ) : (
-              <button
-                type="button"
-                onClick={startScreenCapture}
-                className="px-3 py-1 mono-btn-white rounded text-xs font-mono flex items-center gap-1.5 cursor-pointer"
-              >
-                <MonitorPlay className="w-3.5 h-3.5" />
-                Захватить игру / экран
-              </button>
-            )
-          ) : (
-            <div className="text-xs font-mono text-zinc-400 flex items-center gap-1">
-              <Wifi className={`w-3.5 h-3.5 ${isConnected ? 'text-white' : 'text-zinc-500'}`} />
-              {remoteStream ? 'Поток принимается' : isConnected ? 'Ожидание захвата у хоста' : 'Не подключено'}
-            </div>
-          )}
+              <div className="text-xs font-mono text-zinc-400 flex items-center gap-1">
+                <Wifi className={`w-3.5 h-3.5 ${isConnected ? 'text-white' : 'text-zinc-500'}`} />
+                {remoteStream ? 'Поток принимается' : isConnected ? 'Ожидание захвата у хоста' : 'Не подключено'}
+              </div>
+            )}
 
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="p-1.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
-            title="Во весь экран"
-          >
-            <Maximize2 className="w-4 h-4" />
-          </button>
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="p-1.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              title="Во весь экран"
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Main Viewport */}
       <div className="relative w-full aspect-video min-h-[380px] bg-black flex items-center justify-center">
@@ -174,6 +226,13 @@ export const GameStreamView: React.FC<GameStreamViewProps> = ({
           autoPlay
           playsInline
           muted
+          controls={false}
+          disablePictureInPicture
+          style={{
+            backgroundColor: '#000000',
+            filter: 'none',
+            outline: 'none',
+          }}
           className={`w-full h-full object-contain ${hasVideoActive ? 'block' : 'hidden'}`}
         />
 

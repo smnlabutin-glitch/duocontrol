@@ -3,7 +3,7 @@ import type { LogEntry } from '../types';
 export interface DirectNetCallbacks {
   onStatusChange: (status: 'idle' | 'hosting' | 'connecting' | 'connected' | 'error', msg?: string) => void;
   onRemoteStream: (stream: MediaStream) => void;
-  onRemoteKey: (code: string, isDown: boolean) => void;
+  onRemoteKey: (code: string, isDown: boolean, vk?: number) => void;
   onPingUpdate: (pingMs: number) => void;
   onLog: (message: string, type?: LogEntry['type']) => void;
   onRoomReady?: (roomCode: string) => void;
@@ -302,7 +302,7 @@ export class DirectNetService {
     } else if (data.type === 'key') {
       // Fallback key reception via signaling
       if (this.isHost) {
-        this.callbacks.onRemoteKey(data.code, data.is_down);
+        this.callbacks.onRemoteKey(data.code, data.is_down, data.vk);
       }
     }
   }
@@ -372,7 +372,7 @@ export class DirectNetService {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'key') {
-            this.callbacks.onRemoteKey(data.code, data.is_down);
+            this.callbacks.onRemoteKey(data.code, data.is_down, data.vk);
           } else if (data.type === 'ping') {
             this.dataChannel?.send(JSON.stringify({ type: 'pong', target: data.sender, time: data.time }));
           } else if (data.type === 'pong') {
@@ -438,6 +438,14 @@ export class DirectNetService {
       // Guest listens for video stream track
       this.pc.ontrack = (event) => {
         this.log(`Видеопоток экрана 60 FPS успешно принят!`, 'success');
+        if (event.receiver) {
+          if ('playoutDelayHint' in event.receiver) {
+            (event.receiver as any).playoutDelayHint = 0;
+          }
+          if ('jitterBufferTarget' in event.receiver) {
+            (event.receiver as any).jitterBufferTarget = 0;
+          }
+        }
         if (event.streams && event.streams[0]) {
           this.callbacks.onRemoteStream(event.streams[0]);
         } else if (event.track) {
@@ -475,8 +483,18 @@ export class DirectNetService {
             await videoSender.replaceTrack(videoTrack);
             this.log('Видеодорожка экрана обновлена', 'info');
           } else {
-            this.pc.addTrack(videoTrack, this.localStream);
-            this.log('Видеодорожка экрана добавлена в P2P туннель', 'info');
+            const sender = this.pc.addTrack(videoTrack, this.localStream);
+            try {
+              const params = sender.getParameters();
+              if (!params.encodings || params.encodings.length === 0) {
+                params.encodings = [{}];
+              }
+              params.encodings[0].maxBitrate = 14_000_000;
+              params.encodings[0].maxFramerate = 60;
+              (params as any).degradationPreference = 'maintain-framerate';
+              sender.setParameters(params).catch(() => {});
+            } catch (e) {}
+            this.log('Видеодорожка экрана добавлена в P2P туннель (Ultra-Low Latency)', 'info');
           }
         }
       }
@@ -509,7 +527,7 @@ export class DirectNetService {
 
       if (data.type === 'key') {
         if (this.isHost) {
-          this.callbacks.onRemoteKey(data.code, data.is_down);
+          this.callbacks.onRemoteKey(data.code, data.is_down, data.vk);
         }
       } else if (data.type === 'ping') {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {

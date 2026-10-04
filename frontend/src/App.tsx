@@ -10,12 +10,33 @@ import { DirectNetService } from './services/directNetService';
 import type { PlayerRole, ConnectionState, LogEntry } from './types';
 
 const KEY_MAP: Record<string, number> = {
-  KeyW: 0x57, KeyA: 0x41, KeyS: 0x53, KeyD: 0x44,
-  Space: 0x20, ShiftLeft: 0x10, ShiftRight: 0x10,
-  ControlLeft: 0x11, ControlRight: 0x11,
-  KeyE: 0x45, KeyR: 0x52, KeyQ: 0x51, KeyF: 0x46, KeyG: 0x47,
-  Digit1: 0x31, Digit2: 0x32, Digit3: 0x33, Digit4: 0x34, Digit5: 0x35,
-  Tab: 0x09, Escape: 0x1B,
+  // Letters A-Z
+  KeyA: 0x41, KeyB: 0x42, KeyC: 0x43, KeyD: 0x44, KeyE: 0x45, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48,
+  KeyI: 0x49, KeyJ: 0x4A, KeyK: 0x4B, KeyL: 0x4C, KeyM: 0x4D, KeyN: 0x4E, KeyO: 0x4F, KeyP: 0x50,
+  KeyQ: 0x51, KeyR: 0x52, KeyS: 0x53, KeyT: 0x54, KeyU: 0x55, KeyV: 0x56, KeyW: 0x57, KeyX: 0x58,
+  KeyY: 0x59, KeyZ: 0x5A,
+  // Digits 0-9
+  Digit0: 0x30, Digit1: 0x31, Digit2: 0x32, Digit3: 0x33, Digit4: 0x34,
+  Digit5: 0x35, Digit6: 0x36, Digit7: 0x37, Digit8: 0x38, Digit9: 0x39,
+  // Essential Controls & Modifiers
+  Space: 0x20, Tab: 0x09, Escape: 0x1B, Enter: 0x0D, Backspace: 0x08,
+  ShiftLeft: 0x10, ShiftRight: 0x10, ControlLeft: 0x11, ControlRight: 0x11,
+  AltLeft: 0x12, AltRight: 0x12, CapsLock: 0x14,
+  // Arrows & Navigation
+  ArrowUp: 0x26, ArrowDown: 0x28, ArrowLeft: 0x25, ArrowRight: 0x27,
+  Insert: 0x2D, Delete: 0x2E, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
+  // Function Keys F1-F12
+  F1: 0x70, F2: 0x71, F3: 0x72, F4: 0x73, F5: 0x74, F6: 0x75,
+  F7: 0x76, F8: 0x77, F9: 0x78, F10: 0x79, F11: 0x7A, F12: 0x7B,
+  // Punctuation & Symbols
+  Minus: 0xBD, Equal: 0xBB, BracketLeft: 0xDB, BracketRight: 0xDD,
+  Backslash: 0xDC, Semicolon: 0xBA, Quote: 0xDE, Backquote: 0xC0,
+  Comma: 0xBC, Period: 0xBE, Slash: 0xBF,
+  // Numpad Keys
+  Numpad0: 0x60, Numpad1: 0x61, Numpad2: 0x62, Numpad3: 0x63, Numpad4: 0x64,
+  Numpad5: 0x65, Numpad6: 0x66, Numpad7: 0x67, Numpad8: 0x68, Numpad9: 0x69,
+  NumpadAdd: 0x6B, NumpadSubtract: 0x6D, NumpadMultiply: 0x6A, NumpadDivide: 0x6F,
+  NumpadDecimal: 0x6E, NumpadEnter: 0x0D,
 };
 
 export const App: React.FC = () => {
@@ -50,8 +71,8 @@ export const App: React.FC = () => {
   }, []);
 
   // Native Windows SendInput invoker (for Host injecting keys into games)
-  const triggerNativeKey = useCallback(async (code: string, isDown: boolean) => {
-    const vk = KEY_MAP[code] || 0;
+  const triggerNativeKey = useCallback(async (code: string, isDown: boolean, remoteVk?: number) => {
+    const vk = remoteVk || KEY_MAP[code] || 0;
     if (vk === 0) return;
 
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
@@ -121,7 +142,7 @@ export const App: React.FC = () => {
         addLog('Видеопоток игры 60 FPS успешно принят!', 'success');
         setRemoteStream(stream);
       },
-      onRemoteKey: (code, isDown) => {
+      onRemoteKey: (code, isDown, remoteVk) => {
         setActiveKeys((prev) => {
           const next = new Set(prev);
           if (isDown) next.add(code);
@@ -131,7 +152,7 @@ export const App: React.FC = () => {
 
         // If Host receives a remote key press, inject into Windows!
         if (role === 'host_aimer') {
-          triggerNativeKey(code, isDown);
+          triggerNativeKey(code, isDown, remoteVk);
         }
       },
       onPingUpdate: (ping) => {
@@ -185,7 +206,7 @@ export const App: React.FC = () => {
 
   // Handle local keyboard presses
   const handleSendKey = useCallback(
-    (code: string, isDown: boolean) => {
+    (code: string, isDown: boolean, keyCode?: number) => {
       setActiveKeys((prev) => {
         const next = new Set(prev);
         if (isDown) next.add(code);
@@ -193,11 +214,11 @@ export const App: React.FC = () => {
         return next;
       });
 
+      const vk = KEY_MAP[code] || keyCode || 0;
       if (role === 'client_pilot') {
-        const vk = KEY_MAP[code] || 0;
         netRef.current?.sendKey(code, vk, isDown);
       } else if (role === 'local_couch') {
-        triggerNativeKey(code, isDown);
+        triggerNativeKey(code, isDown, vk);
       }
     },
     [role, triggerNativeKey]
