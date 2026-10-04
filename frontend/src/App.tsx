@@ -52,8 +52,6 @@ export const App: React.FC = () => {
   const [activeKeys, setActiveKeys] = useState<Set<string>>(new Set());
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [inputMode, setInputMode] = useState<'keyboard' | 'gamepad'>('keyboard');
-  const [hasViGEm, setHasViGEm] = useState(false);
 
   const netRef = useRef<DirectNetService | null>(null);
 
@@ -75,12 +73,12 @@ export const App: React.FC = () => {
   // Native Windows SendInput invoker (for Host injecting keys into games)
   const triggerNativeKey = useCallback(async (code: string, isDown: boolean, remoteVk?: number) => {
     const vk = remoteVk || KEY_MAP[code] || 0;
-    if (vk === 0 && !code) return;
+    if (vk === 0) return;
 
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('inject_key_event', { vkCode: vk, isDown, code });
+        await invoke('inject_key_event', { vkCode: vk, isDown });
       } catch (err) {
         console.error('Tauri inject key error:', err);
       }
@@ -104,7 +102,7 @@ export const App: React.FC = () => {
         console.log('Public IP fetch note:', e);
       }
 
-      // 2. Fetch local interface IPs and input capabilities from Rust
+      // 2. Fetch local interface IPs from Rust
       if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
         try {
           const { invoke } = await import('@tauri-apps/api/core');
@@ -115,19 +113,8 @@ export const App: React.FC = () => {
             setHostIp(chosen);
             addLog(`Локальный сетевой IP: ${chosen}`, 'network');
           }
-
-          const caps = await invoke<{ has_vigem: boolean; current_mode: string }>('get_input_capabilities');
-          if (caps) {
-            setHasViGEm(caps.has_vigem);
-            setInputMode(caps.current_mode as any);
-            if (caps.has_vigem) {
-              addLog('Драйвер ViGEmBus активен: доступен режим Виртуального геймпада Xbox 360!', 'success');
-            } else {
-              addLog('Режим ввода: Аппаратные скан-коды ядра Windows (DirectInput/DirectX)', 'info');
-            }
-          }
         } catch (e) {
-          console.error('Failed to fetch local IPs/capabilities:', e);
+          console.error('Failed to fetch local IPs:', e);
         }
       }
     };
@@ -279,24 +266,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // Toggle Input Mode (PC Keyboard ScanCode vs Virtual Xbox 360 Controller)
-  const handleToggleInputMode = async () => {
-    const nextMode = inputMode === 'keyboard' ? 'gamepad' : 'keyboard';
-    setInputMode(nextMode);
-    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('set_input_mode', { mode: nextMode });
-        addLog(
-          nextMode === 'gamepad'
-            ? 'Режим ввода: Виртуальный контроллер Xbox 360 (ViGEmBus)'
-            : 'Режим ввода: Клавиатура ПК (ScanCode Kernel)',
-          'info'
-        );
-      } catch (e) {}
-    }
-  };
-
   return (
     <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col font-sans">
       <Header connectionState={connectionState} />
@@ -324,12 +293,9 @@ export const App: React.FC = () => {
           publicIp={publicIp}
           roomCode={roomCode}
           keyboardLocked={keyboardLocked}
-          inputMode={inputMode}
-          hasViGEm={hasViGEm}
           errorMessage={errorMessage}
           onConnectRoom={handleConnectRoom}
           onToggleKeyboardLock={handleToggleKeyboardLock}
-          onToggleInputMode={handleToggleInputMode}
         />
 
         {/* INTEGRATED LIVE GAME STREAM VIEWPORT */}

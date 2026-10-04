@@ -1,5 +1,5 @@
 import React from 'react';
-import { Gamepad2, Minus, X, ShieldAlert } from 'lucide-react';
+import { Keyboard, Minus, X, ShieldAlert } from 'lucide-react';
 import type { ConnectionState } from '../../types';
 
 interface HeaderProps {
@@ -12,7 +12,7 @@ export const Header: React.FC<HeaderProps> = ({ connectionState }) => {
       {/* BRAND & TITLE */}
       <div className="flex items-center gap-2.5">
         <div className="w-8 h-8 rounded bg-white text-black flex items-center justify-center font-bold">
-          <Gamepad2 className="w-4 h-4 text-black stroke-[2.5]" />
+          <Keyboard className="w-4 h-4 text-black stroke-[2.5]" />
         </div>
         <div>
           <div className="flex items-center gap-2">

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Play, Copy, Check, Lock, Unlock, Globe, Wifi, KeyRound, Loader2, AlertCircle, Gamepad2 } from 'lucide-react';
+import { Play, Copy, Check, Lock, Unlock, Globe, Wifi, KeyRound, Loader2, AlertCircle } from 'lucide-react';
 import type { ConnectionState, PlayerRole } from '../../types';
 
 interface LobbyCardProps {
@@ -9,12 +9,9 @@ interface LobbyCardProps {
   publicIp: string;
   roomCode: string;
   keyboardLocked: boolean;
-  inputMode?: 'keyboard' | 'gamepad';
-  hasViGEm?: boolean;
   errorMessage?: string;
   onConnectRoom: (target: string) => void;
   onToggleKeyboardLock: () => void;
-  onToggleInputMode?: () => void;
 }
 
 export const LobbyCard: React.FC<LobbyCardProps> = ({
@@ -24,12 +21,9 @@ export const LobbyCard: React.FC<LobbyCardProps> = ({
   publicIp,
   roomCode,
   keyboardLocked,
-  inputMode = 'keyboard',
-  hasViGEm = false,
   errorMessage,
   onConnectRoom,
   onToggleKeyboardLock,
-  onToggleInputMode,
 }) => {
   const [target, setTarget] = useState('');
   const [copiedType, setCopiedType] = useState<string | null>(null);
@@ -155,51 +149,27 @@ export const LobbyCard: React.FC<LobbyCardProps> = ({
 
         <div className="flex items-center gap-2 shrink-0">
           {role === 'host_aimer' && (
-            <>
-              {onToggleInputMode && (
-                <button
-                  type="button"
-                  onClick={onToggleInputMode}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-mono transition-all cursor-pointer ${
-                    inputMode === 'gamepad'
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-semibold'
-                      : 'mono-btn-outline text-zinc-300'
-                  }`}
-                  title={
-                    hasViGEm
-                      ? 'Переключение режима ввода: Виртуальный геймпад Xbox 360 или Клавиатура ПК'
-                      : 'Драйвер ViGEmBus не найден (используется прямой ввод скан-кодов ядра)'
-                  }
-                >
-                  <Gamepad2 className="w-3.5 h-3.5" />
-                  <span>
-                    {inputMode === 'gamepad' ? 'Xbox 360 Pad' : 'Клавиатура ПК'}
-                  </span>
-                </button>
+            <button
+              type="button"
+              onClick={onToggleKeyboardLock}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-mono transition-all cursor-pointer ${
+                keyboardLocked
+                  ? 'bg-white text-black border-white font-semibold'
+                  : 'mono-btn-outline text-zinc-300'
+              }`}
+            >
+              {keyboardLocked ? (
+                <>
+                  <Lock className="w-3.5 h-3.5" />
+                  Клавиатура хоста: заглушена
+                </>
+              ) : (
+                <>
+                  <Unlock className="w-3.5 h-3.5 text-zinc-400" />
+                  Заглушить свою клавиатуру
+                </>
               )}
-
-              <button
-                type="button"
-                onClick={onToggleKeyboardLock}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-mono transition-all cursor-pointer ${
-                  keyboardLocked
-                    ? 'bg-white text-black border-white font-semibold'
-                    : 'mono-btn-outline text-zinc-300'
-                }`}
-              >
-                {keyboardLocked ? (
-                  <>
-                    <Lock className="w-3.5 h-3.5" />
-                    Клавиатура хоста: заглушена
-                  </>
-                ) : (
-                  <>
-                    <Unlock className="w-3.5 h-3.5 text-zinc-400" />
-                    Заглушить свою клавиатуру
-                  </>
-                )}
-              </button>
-            </>
+            </button>
           )}
 
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-white/5 border border-white/10 text-xs font-mono text-zinc-300">

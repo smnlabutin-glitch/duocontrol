@@ -7,7 +7,6 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::input::gamepad::VirtualGamepad;
 use crate::input::injector::InputInjector;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -105,24 +104,29 @@ impl ServerManager {
 }
 
 fn try_open_upnp(port: u16, local_ip: Ipv4Addr) {
-    println!("DuoControl: Attempting router UPnP port forwarding for port {}...", port);
-    if let Ok(gateway) = igd_next::search_gateway(Default::default()) {
+    println!("DuoControl: Searching for UPnP router on interface {}...", local_ip);
+    let opts = igd_next::SearchOptions {
+        bind_addr: SocketAddr::V4(SocketAddrV4::new(local_ip, 0)),
+        timeout: Some(std::time::Duration::from_secs(3)),
+        ..Default::default()
+    };
+    if let Ok(gateway) = igd_next::search_gateway(opts) {
         let local_addr = SocketAddr::V4(SocketAddrV4::new(local_ip, port));
         let _ = gateway.add_port(
             igd_next::PortMappingProtocol::TCP,
             port,
             local_addr,
             7200,
-            "DuoControl P2P Co-Op Game",
+            "DuoControl",
         );
         let _ = gateway.add_port(
             igd_next::PortMappingProtocol::UDP,
             port,
             local_addr,
             7200,
-            "DuoControl P2P Co-Op Game",
+            "DuoControl",
         );
-        println!("DuoControl: UPnP port {} mapped on router!", port);
+        println!("DuoControl: UPnP port {} mapped on router for external play without VPN!", port);
     }
 }
 
@@ -150,18 +154,8 @@ async fn handle_connection(
                         let text = utf8_text.as_str();
                         if let Ok(mut payload) = serde_json::from_str::<WsPayload>(text) {
                             if payload.r#type == "key" {
-                                if let Some(is_down) = payload.is_down {
-                                    let mut handled = false;
-                                    if let Some(ref code) = payload.code {
-                                        if VirtualGamepad::is_available() && VirtualGamepad::send_key(code, is_down) {
-                                            handled = true;
-                                        }
-                                    }
-                                    if !handled {
-                                        if let Some(vk) = payload.vk {
-                                            InputInjector::send_key(vk, is_down);
-                                        }
-                                    }
+                                if let (Some(vk), Some(is_down)) = (payload.vk, payload.is_down) {
+                                    InputInjector::send_key(vk, is_down);
                                     payload.injected = Some(true);
                                     if let Ok(tagged_text) = serde_json::to_string(&payload) {
                                         let _ = broadcast_tx.send(tagged_text);
@@ -189,7 +183,6 @@ async fn handle_connection(
 
     // Safety: Release all pressed keys on disconnect to eliminate stuck keys
     InputInjector::release_all();
-    VirtualGamepad::release_all();
 }
 
 fn get_primary_ipv4() -> Option<Ipv4Addr> {

@@ -153,13 +153,28 @@ export class DirectNetService {
   private joinP2PRoom(code: string) {
     this.subscribeSignaling(code);
 
-    // Notify Host that Guest joined
-    this.sendSignalingMessage({
-      type: 'client_joined',
-      sender: this.clientId,
-      time: Date.now(),
-    });
-    this.log(`Запрос на подключение отправлен в комнату ${code}. Ожидание ответа хоста...`, 'info');
+    const sendJoin = () => {
+      if (this.pc && (this.pc.iceConnectionState === 'connected' || this.pc.iceConnectionState === 'completed')) {
+        if (this.joinRetryTimer) {
+          clearInterval(this.joinRetryTimer);
+          this.joinRetryTimer = null;
+        }
+        return;
+      }
+      this.sendSignalingMessage({
+        type: 'client_joined',
+        sender: this.clientId,
+        time: Date.now(),
+      });
+    };
+
+    // Send immediately
+    sendJoin();
+    this.log(`Запрос на подключение отправлен в комнату ${code}. Ожидание хоста...`, 'info');
+
+    // Auto-retry every 2.5s until connected (ensures connection even if host opened lobby seconds later)
+    if (this.joinRetryTimer) clearInterval(this.joinRetryTimer);
+    this.joinRetryTimer = window.setInterval(sendJoin, 2500);
   }
 
   // Subscribe to ntfy.sh public signaling topic for WebRTC negotiation
@@ -249,14 +264,19 @@ export class DirectNetService {
     }
   }
 
+  private joinRetryTimer: number | null = null;
+
   // Handle incoming signaling messages
   private async handleSignalingMessage(data: any) {
     if (data.type === 'client_joined') {
       if (this.isHost) {
-        this.log(`Пилот подключился к лобби! Создание прямого P2P WebRTC канала...`, 'success');
-        this.callbacks.onStatusChange('connected', 'Пилот подключен. Установка P2P соединения...');
+        if (this.pc && (this.pc.iceConnectionState === 'connected' || this.pc.iceConnectionState === 'completed')) {
+          return;
+        }
+        this.log(`Пилот подключился к лобби! Установка прямого P2P соединения...`, 'success');
+        this.callbacks.onStatusChange('connected', 'Пилот обнаружен. Установка P2P соединения...');
         this.initWebRTC(true);
-        this.startWebRtcOffer();
+        await this.startWebRtcOffer();
       }
     } else if (data.type === 'offer') {
       if (!this.isHost) {
@@ -268,13 +288,17 @@ export class DirectNetService {
           try {
             await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
             const answer = await this.pc.createAnswer();
-            const optimizedAnswerSdp = this.optimizeSdpForGaming(answer.sdp || '');
-            await this.pc.setLocalDescription(new RTCSessionDescription({ type: 'answer', sdp: optimizedAnswerSdp }));
+            await this.pc.setLocalDescription(answer);
+
+            // Wait for ICE gathering to complete so all candidates are embedded in answer SDP
+            await this.waitForIceGathering(this.pc, 800);
+
+            const finalAnswerSdp = this.optimizeSdpForGaming(this.pc.localDescription?.sdp || answer.sdp || '');
 
             if (this.dataChannel && this.dataChannel.readyState === 'open') {
-              this.dataChannel.send(JSON.stringify({ type: 'answer', sdp: optimizedAnswerSdp }));
+              this.dataChannel.send(JSON.stringify({ type: 'answer', sdp: finalAnswerSdp }));
             }
-            await this.sendSignalingMessage({ type: 'answer', sdp: optimizedAnswerSdp });
+            await this.sendSignalingMessage({ type: 'answer', sdp: finalAnswerSdp });
             this.log(`P2P-ответ отправлен хосту (H.264 Ultra-Low Latency).`, 'info');
           } catch (err: any) {
             console.error('Error handling offer:', err);
@@ -308,6 +332,28 @@ export class DirectNetService {
     }
   }
 
+  // Helper: wait for ICE gathering to complete (non-trickle ICE: single HTTP request)
+  private async waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number = 800): Promise<void> {
+    if (pc.iceGatheringState === 'complete') return;
+    return new Promise<void>((resolve) => {
+      let resolved = false;
+      const done = () => {
+        if (!resolved) {
+          resolved = true;
+          pc.removeEventListener('icegatheringstatechange', check);
+          resolve();
+        }
+      };
+      const check = () => {
+        if (pc.iceGatheringState === 'complete') {
+          done();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+      setTimeout(done, timeoutMs);
+    });
+  }
+
   // Host: Connect to internal native Rust WS on 127.0.0.1:44555
   private connectLocalWs() {
     try {
@@ -332,15 +378,12 @@ export class DirectNetService {
 
     this.pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
 
+    // Candidate handler: ONLY exchange candidates over existing DataChannel or Direct WS to avoid HTTP rate limit spam
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
-        // Send via direct DataChannel if available
         if (this.dataChannel && this.dataChannel.readyState === 'open') {
           this.dataChannel.send(JSON.stringify({ type: 'ice', candidate: event.candidate }));
         }
-        // Send via signaling
-        this.sendSignalingMessage({ type: 'ice', candidate: event.candidate });
-        // Also send via direct WS if open
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: 'ice', candidate: event.candidate }));
         }
@@ -351,10 +394,14 @@ export class DirectNetService {
       const state = this.pc?.iceConnectionState;
       this.log(`Статус P2P ICE: ${state}`, 'network');
       if (state === 'connected' || state === 'completed') {
+        if (this.joinRetryTimer) {
+          clearInterval(this.joinRetryTimer);
+          this.joinRetryTimer = null;
+        }
         this.log(`Прямое P2P соединение активно!`, 'success');
         this.callbacks.onStatusChange('connected', 'P2P-туннель активен (прямое соединение)');
       } else if (state === 'failed') {
-        this.log(`P2P ICE не удалось установить прямой маршрут. Пробуем резервный канал.`, 'warn');
+        this.log(`P2P ICE не удалось установить прямой маршрут. Пробуем повторное согласование...`, 'warn');
       }
     };
 
@@ -402,6 +449,10 @@ export class DirectNetService {
         this.log(`P2P DataChannel подключен к хосту!`, 'success');
 
         this.dataChannel.onopen = () => {
+          if (this.joinRetryTimer) {
+            clearInterval(this.joinRetryTimer);
+            this.joinRetryTimer = null;
+          }
           this.callbacks.onStatusChange('connected', 'Связь активна (P2P без VPN)');
           this.startPingLoop();
         };
@@ -465,7 +516,7 @@ export class DirectNetService {
   public setLocalStream(stream: MediaStream | null) {
     this.localStream = stream;
     if (this.isHost && stream) {
-      this.log(`Трансляция экрана захвачена. Отправка видеопотока пилоту...`, 'info');
+      this.log(`Трансляция экрана захвачена (60 FPS). Отправка видеопотока пилоту...`, 'info');
       this.startWebRtcOffer();
     }
   }
@@ -489,7 +540,7 @@ export class DirectNetService {
           const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
           if (videoSender) {
             await videoSender.replaceTrack(videoTrack);
-            this.log('Видеодорожка экрана обновлена (Sunshine Motion Profile)', 'info');
+            this.log('Видеодорожка экрана обновлена (H.264 Ultra-Low Latency)', 'info');
           } else {
             const sender = this.pc.addTrack(videoTrack, this.localStream);
             try {
@@ -502,14 +553,19 @@ export class DirectNetService {
               (params as any).degradationPreference = 'maintain-resolution';
               sender.setParameters(params).catch(() => {});
             } catch (e) {}
-            this.log('Видеодорожка экрана добавлена в P2P туннель (Sunshine NVENC/AMF 60 FPS)', 'info');
+            this.log('Видеодорожка экрана добавлена в P2P туннель (H.264 60 FPS)', 'info');
           }
         }
       }
 
-      const offer = await this.pc.createOffer();
-      const optimizedSdp = this.optimizeSdpForGaming(offer.sdp || '');
-      await this.pc.setLocalDescription(new RTCSessionDescription({ type: 'offer', sdp: optimizedSdp }));
+      const offer = await this.pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
+      await this.pc.setLocalDescription(offer);
+
+      // Wait for ICE gathering to complete so all candidates are embedded in offer SDP
+      await this.waitForIceGathering(this.pc, 800);
+
+      const offerSdp = this.pc.localDescription?.sdp || offer.sdp || '';
+      const optimizedSdp = this.optimizeSdpForGaming(offerSdp);
 
       // 1. Direct via DataChannel if already open (instant <1ms renegotiation)
       if (this.dataChannel && this.dataChannel.readyState === 'open') {
@@ -529,7 +585,7 @@ export class DirectNetService {
     }
   }
 
-  // Sunshine / Moonlight architecture: Force hardware H.264 video codec and high bitrate
+  // Force hardware H.264 video codec and high bitrate for ultra-low latency 60 FPS
   private optimizeSdpForGaming(sdp: string): string {
     if (!sdp) return sdp;
     const lines = sdp.split('\r\n');
@@ -644,6 +700,10 @@ export class DirectNetService {
   }
 
   public destroy() {
+    if (this.joinRetryTimer) {
+      clearInterval(this.joinRetryTimer);
+      this.joinRetryTimer = null;
+    }
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.eventSource) {
       this.eventSource.close();
