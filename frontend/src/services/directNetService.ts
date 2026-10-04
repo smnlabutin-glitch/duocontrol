@@ -374,7 +374,12 @@ export class DirectNetService {
           if (data.type === 'key') {
             this.callbacks.onRemoteKey(data.code, data.is_down);
           } else if (data.type === 'ping') {
-            this.dataChannel?.send(JSON.stringify({ type: 'pong', time: data.time }));
+            this.dataChannel?.send(JSON.stringify({ type: 'pong', target: data.sender, time: data.time }));
+          } else if (data.type === 'pong') {
+            if (data.target === this.clientId) {
+              const ping = Math.max(0.5, performance.now() - data.time);
+              this.callbacks.onPingUpdate(ping);
+            }
           } else if (data.type === 'answer') {
             this.log(`Пилот принял видеопоток через DataChannel!`, 'success');
             if (this.pc && this.pc.signalingState === 'have-local-offer') {
@@ -404,8 +409,12 @@ export class DirectNetService {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'pong') {
-              const ping = performance.now() - data.time;
-              this.callbacks.onPingUpdate(ping);
+              if (data.target === this.clientId) {
+                const ping = Math.max(0.5, performance.now() - data.time);
+                this.callbacks.onPingUpdate(ping);
+              }
+            } else if (data.type === 'ping') {
+              this.dataChannel?.send(JSON.stringify({ type: 'pong', target: data.sender, time: data.time }));
             } else if (data.type === 'offer') {
               this.log(`Получен P2P видеопоток через DataChannel! Принятие...`, 'info');
               if (this.pc) {
@@ -504,11 +513,13 @@ export class DirectNetService {
         }
       } else if (data.type === 'ping') {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'pong', time: data.time }));
+          this.ws.send(JSON.stringify({ type: 'pong', target: data.sender, time: data.time }));
         }
       } else if (data.type === 'pong') {
-        const ping = performance.now() - data.time;
-        this.callbacks.onPingUpdate(ping);
+        if (data.target === this.clientId) {
+          const ping = Math.max(0.5, performance.now() - data.time);
+          this.callbacks.onPingUpdate(ping);
+        }
       } else if (['client_joined', 'offer', 'answer', 'ice'].includes(data.type)) {
         await this.handleSignalingMessage(data);
       }
@@ -521,12 +532,13 @@ export class DirectNetService {
     if (this.pingInterval) clearInterval(this.pingInterval);
     this.pingInterval = window.setInterval(() => {
       const now = performance.now();
+      const payload = JSON.stringify({ type: 'ping', sender: this.clientId, time: now });
       if (this.dataChannel && this.dataChannel.readyState === 'open') {
-        this.dataChannel.send(JSON.stringify({ type: 'ping', time: now }));
+        this.dataChannel.send(payload);
       } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping', time: now }));
+        this.ws.send(payload);
       }
-    }, 400);
+    }, 500);
   }
 
   // Send key press from Client to Host

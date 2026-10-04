@@ -18,7 +18,7 @@ export const Header: React.FC<HeaderProps> = ({ connectionState }) => {
           <div className="flex items-center gap-2">
             <h1 className="font-bold text-sm tracking-wider text-white uppercase">DUOCONTROL</h1>
             <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/10 text-zinc-300 font-semibold">
-              PORTABLE v1.1
+              PORTABLE v1.2
             </span>
           </div>
         </div>

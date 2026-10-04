@@ -1,8 +1,8 @@
 //! Windows SendInput keyboard injection engine
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
-    VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 #[cfg(windows)]
 use std::mem::size_of;
@@ -14,6 +14,9 @@ impl InputInjector {
     #[cfg(windows)]
     pub fn send_key(vk: u16, is_down: bool) -> bool {
         unsafe {
+            // Map virtual key to hardware scan code for DirectX / 3D game engines
+            let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
+
             let mut flags = KEYEVENTF_SCANCODE;
             if !is_down {
                 flags |= KEYEVENTF_KEYUP;
@@ -24,7 +27,7 @@ impl InputInjector {
                 Anonymous: INPUT_0 {
                     ki: KEYBDINPUT {
                         wVk: vk as VIRTUAL_KEY,
-                        wScan: 0,
+                        wScan: scan,
                         dwFlags: flags,
                         time: 0,
                         dwExtraInfo: 0,

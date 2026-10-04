@@ -205,9 +205,17 @@ export const App: React.FC = () => {
 
   // Panic hotkey (Ctrl + Shift + F12)
   useEffect(() => {
-    const unsubPanic = inputService.onPanic(() => {
+    const unsubPanic = inputService.onPanic(async () => {
       setPanicTriggered(true);
       setKeyboardLocked(false);
+      if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('panic_reset');
+        } catch (err) {
+          console.error('Tauri panic reset error:', err);
+        }
+      }
       addLog('ВНИМАНИЕ: Сработал аварийный сброс (Panic Reset)!', 'warn');
       setTimeout(() => setPanicTriggered(false), 4000);
     });
@@ -216,6 +224,26 @@ export const App: React.FC = () => {
       unsubPanic();
     };
   }, [addLog]);
+
+  // Toggle Physical Keyboard Lock on Host
+  const handleToggleKeyboardLock = async () => {
+    const next = !keyboardLocked;
+    setKeyboardLocked(next);
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('toggle_keyboard_mute', { mute: next });
+        addLog(
+          next
+            ? 'Физическая клавиатура хоста (WASD/прыжок) заблокирована для пилота'
+            : 'Физическая клавиатура хоста разблокирована',
+          'info'
+        );
+      } catch (err) {
+        console.error('Tauri toggle mute error:', err);
+      }
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#09090b] text-[#fafafa] flex flex-col font-sans">
@@ -246,7 +274,7 @@ export const App: React.FC = () => {
           keyboardLocked={keyboardLocked}
           errorMessage={errorMessage}
           onConnectRoom={handleConnectRoom}
-          onToggleKeyboardLock={() => setKeyboardLocked(!keyboardLocked)}
+          onToggleKeyboardLock={handleToggleKeyboardLock}
         />
 
         {/* INTEGRATED LIVE GAME STREAM VIEWPORT */}

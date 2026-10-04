@@ -11,7 +11,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::State;
 
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, SetWindowsHookExW, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
+};
+
 static KEYBOARD_MUTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+unsafe extern "system" fn low_level_keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+    if code >= 0 && KEYBOARD_MUTED.load(Ordering::SeqCst) {
+        let kbd = *(lparam as *const KBDLLHOOKSTRUCT);
+        // LLKHF_INJECTED is bit 4 (0x10) of flags
+        let is_injected = (kbd.flags & 0x10) != 0;
+        if !is_injected {
+            let vk = kbd.vkCode as u16;
+            let is_movement_key = matches!(
+                vk,
+                0x57 | 0x41 | 0x53 | 0x44 | // W, A, S, D
+                0x20 |                      // Space
+                0x10 | 0xA0 | 0xA1 |        // Shift
+                0x11 | 0xA2 | 0xA3 |        // Ctrl
+                0x45 | 0x52 | 0x51 | 0x46   // E, R, Q, F
+            );
+            if is_movement_key {
+                return 1; // Block keystroke on physical host keyboard
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
 
 #[derive(Serialize)]
 pub struct SystemStatus {
@@ -76,6 +105,16 @@ fn main() {
     tauri::Builder::default()
         .manage(server_manager.clone())
         .setup(move |_app| {
+            #[cfg(windows)]
+            unsafe {
+                SetWindowsHookExW(
+                    WH_KEYBOARD_LL,
+                    Some(low_level_keyboard_proc),
+                    std::ptr::null_mut(),
+                    0,
+                );
+            }
+
             let sm_clone = server_manager.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = sm_clone.start(44555).await;
